@@ -1,0 +1,13 @@
+numpy
+scipy
+matplotlib
+tensorflow-gpu
+keras>=2.0.5
+tqdm
+tableprint
+scikit-learn
+scikit-image
+h5py
+descent
+deepdish
+pyret

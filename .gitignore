@@ -1,0 +1,28 @@
+# --- Existing Data & Environments ---
+data/
+*.h5
+*.mat
+.DS_Store
+.conda/
+Models/.conda/
+__pycache__/
+
+# --- Python Bytecode (Standard) ---
+*.pyc
+*.pyo
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+
+# --- IDE Settings (VS Code / Cursor) ---
+.vscode/
+.idea/
+
+# --- Generated Binary Files (from C++ script) ---
+*.bin
+generator
+
+# --- Documents (If you want code ONLY) ---
+*.pdf
+*.docx
+Written-materials/

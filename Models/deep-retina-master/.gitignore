@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# temporary data
+.ipynb_checkpoints/
+
+# images
+*.png
+*.pdf
+*.jpg
+*.svg
+
+# other
+tags
+.mypy_cache
+sandbox/
+tensorboard/
+results/

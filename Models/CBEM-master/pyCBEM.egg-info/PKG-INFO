@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: pyCBEM
+Version: 0.1
+Home-page: https://github.com/pillowlab/CBEM
+Author: Kenneth W. Latimer
+Author-email: latimerkw@gmail.com
+License: MIT
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: jax
+Requires-Dist: scipy
+Dynamic: author
+Dynamic: author-email
+Dynamic: home-page
+Dynamic: license
+Dynamic: license-file
+Dynamic: requires-dist
