@@ -64,28 +64,33 @@ jupyter notebook SUBMISSION_flashed_reconstruction_demo.ipynb
 
 1. **Verify installation**:
    ```bash
-   cd Models
+   cd src
    python run_all_models.py
    ```
 
-2. **Run a specific model** - see `Models/QUICK_START.md` for detailed instructions.
+2. **Run a specific model** - see `QUICK_START.md` for detailed instructions.
 
 ## 🔬 Custom Analysis Pipeline
 
-A set of scripts for processing the Karamanlis dataset and training custom models.
+A set of scripts in `src/` for processing the Karamanlis dataset and training custom models.
 
 ```mermaid
 flowchart LR
-    A[generate_stimulus.py] --> B[data_loader.py]
-    B --> C[find_best_cell.py]
-    B --> D[analyze_rf.py]
-    B --> E[train_ln_model.py]
+    CFG[config.py] --> A[generate_stimulus.py]
+    CFG --> B[data_loader.py]
+    CFG --> C[find_best_cell.py]
+    CFG --> D[analyze_rf.py]
+    CFG --> E[train_ln_model.py]
+    A --> B
+    B --> D
+    B --> E
 ```
 
 ### Scripts
 
 | Script | Description |
 |--------|-------------|
+| `config.py` | Centralized configuration with dynamic relative paths for `BASE_PATH` and `SESSION` |
 | `generate_stimulus.py` | Generates white noise stimulus using the ran1 RNG algorithm (compiles C++ for exact reproducibility) |
 | `data_loader.py` | Synchronizes spike times with frame times and creates `training_dataset_wn.h5` |
 | `find_best_cell.py` | Analyzes cells by spike count and recommends the most active cell |
@@ -95,7 +100,7 @@ flowchart LR
 ### Typical Workflow
 
 ```bash
-cd Models
+cd src
 
 # Step 1: Generate the white noise stimulus (compiles and runs C++)
 python generate_stimulus.py
@@ -140,17 +145,19 @@ The `Written-materials/` folder contains:
 Retina-Comp-Project/
 ├── data/                          # Experimental spike train data
 │   └── 10.12751_g-node.2j3d2i/   # Karamanlis & Gollisch 2021 dataset
-├── Models/                        # Computational models
+├── Models/                        # Third-party computational models
 │   ├── CBEM-master/              # Conductance-based Encoding Model
 │   ├── deep-retina-master/       # Deep neural network models
-│   ├── wu-nature-comms-2024-master/  # Stimulus reconstruction
+│   └── wu-nature-comms-2024-master/  # Stimulus reconstruction
+├── src/                           # Custom analysis pipeline
+│   ├── config.py                 # Centralized path configuration
 │   ├── generate_stimulus.py      # White noise stimulus generator
 │   ├── data_loader.py            # Training data preparation
 │   ├── find_best_cell.py         # Cell selection by spike count
 │   ├── analyze_rf.py             # STA receptive field analysis
 │   ├── train_ln_model.py         # LN model training (PyTorch)
-│   ├── run_all_models.py         # Verification script
-│   └── QUICK_START.md            # Model usage guide
+│   └── run_all_models.py         # Verification script
+├── QUICK_START.md                # Model usage guide
 └── Written-materials/            # Lectures and papers
 ```
 
