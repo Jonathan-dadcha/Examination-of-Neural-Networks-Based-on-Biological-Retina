@@ -1,8 +1,11 @@
+import sys
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 from config import BASE_PATH, SESSION
+
 
 DATA_FILE = os.path.join(BASE_PATH, SESSION, 'processed_data', 'training_dataset_wn.h5')
 

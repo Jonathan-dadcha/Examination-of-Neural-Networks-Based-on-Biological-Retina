@@ -1,6 +1,9 @@
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
 from config import BASE_PATH, SESSION
+
 
 def scan_sessions(base_path):
     sessions = [d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))]

@@ -1,8 +1,10 @@
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import BASE_PATH, SESSION
 import h5py
 import numpy as np
 import pandas as pd
-from config import BASE_PATH, SESSION
 
 def prepare_training_data():
     processed_dir = os.path.join(BASE_PATH, SESSION, 'processed_data')
@@ -43,7 +45,7 @@ def prepare_training_data():
         return
 
     # 2. Load White Noise Video (X)
-    wn_path = os.path.join(processed_dir, 'white_noise_v2.h5')
+    wn_path = os.path.join(processed_dir, 'white_noise_v1.h5')
     if os.path.exists(wn_path):
         with h5py.File(wn_path, 'r') as f:
             raw_stim = f['stimulus'][:]

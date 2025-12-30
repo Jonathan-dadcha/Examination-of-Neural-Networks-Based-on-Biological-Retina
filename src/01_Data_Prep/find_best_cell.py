@@ -1,8 +1,9 @@
 import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
 import matplotlib.pyplot as plt
 from config import BASE_PATH, SESSION
-
 SPIKES_DIR = os.path.join(BASE_PATH, SESSION, 'spiketimes')
 
 def find_best_cell():
