@@ -1,179 +1,187 @@
-# Examination of Neural Networks Based on Biological Retina
+# 🧠 Comparative Analysis of Retinal Neural Networks
 
-A computational neuroscience project exploring retinal ganglion cell (RGC) encoding and neural network models inspired by biological vision processing.
+**A computational neuroscience framework exploring how Statistical, Biophysical, and Deep Learning approaches predict retinal ganglion cell responses to Natural Scenes.**
 
-## 📋 Overview
+---
 
-This repository contains:
-- **Experimental Data**: Spike train recordings from mouse retinal ganglion cells
-- **Computational Models**: Three state-of-the-art models for retinal processing
-- **Educational Materials**: MIT lecture notes and research papers on vision systems
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat&logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0-EE4C2C?style=flat&logo=pytorch&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat)
 
-## 🧬 Data
+---
 
-### Karamanlis & Gollisch 2021 Dataset
-Located in `data/10.12751_g-node.2j3d2i/`
+## Overview
 
-Spike train data from mouse retinal ganglion cells under natural image stimulation.
+This repository hosts a **Unified Comparative Framework** designed to evaluate retinal encoding models. Unlike traditional studies using white noise stimuli, this project focuses on **Natural Scene (NS) stimuli**, which present complex spatiotemporal correlations that challenge conventional modeling approaches.
 
-**Source**: [Karamanlis D and Gollisch T (2021) Nonlinear spatial integration underlies the diversity of retinal ganglion cell responses to natural images. *J Neurosci* 41:3479-3498.](https://pubmed.ncbi.nlm.nih.gov/33664129/)
+We implemented and compared four distinct modeling paradigms:
 
-**Contents**:
-- Multiple recording sessions (2017-2018)
-- Spike times for individual cells
-- Frame timing data
-- Visual stimuli (natural images, gratings, noise patterns)
+| Path | Approach | Description |
+|:----:|:---------|:------------|
+| **A** | Linear Statistical Model | GLM/CBEM with Poisson regression |
+| **B** | Biophysical ODE Model | Retinomorphic circuit simulation |
+| **C** | Deep Learning | Spatiotemporal CNN architecture |
+| **D** | Foveated CNN | Location-dependent processing *(In Progress)* |
 
-See `data/10.12751_g-node.2j3d2i/manual.pdf` for detailed documentation.
+---
 
-## 🧠 Models
+## Data Pipeline
 
-### 1. CBEM (Conductance-based Encoding Model)
-`Models/CBEM-master/`
+The project leverages the **Karamanlis & Gollisch 2021** dataset featuring Mouse Retinal Ganglion Cell recordings.
 
-A biophysically-inspired model that captures the conductance dynamics of retinal ganglion cells.
+**Pipeline Location:** `src/01_Data_Prep/`
+
+### Core Script: `prepare_ns_dataset_v2.py`
+
+- Reconstructs the random sequence of natural images using the original `ran1` algorithm
+- Upsamples images to video frames at **60 Hz**
+- Synchronizes spike trains with **millisecond precision**
+- Outputs processed H5 files (`training_dataset_ns_full.h5`) ready for model training
+
+---
+
+## Implemented Models
+
+### Path A — Statistical Model (CBEM/GLM)
+
+📁 **Location:** `src/Path_A_CBEM/`
+
+| Attribute | Details |
+|:----------|:--------|
+| **Type** | Generalized Linear Model (Poisson Regression) |
+| **Logic** | Predicts firing rate via linear combination of past frames (20-frame history) |
+| **Result** | Failed to capture natural scene dynamics — *R ≈ 0* |
+
+> Linear models prove insufficient for complex visual stimuli with rich spatiotemporal correlations.
+
+---
+
+### Path B — Biophysical Model (Retinomorphic ODE)
+
+📁 **Location:** `src/Path_B_Retinomorphic/`
+
+| Attribute | Details |
+|:----------|:--------|
+| **Type** | Ordinary Differential Equations (RK4 solver) |
+| **Logic** | Simulates cellular electrical circuits (RC) with bandpass filtering and adaptation |
+| **Result** | Fixed mathematical structure proved too rigid — *R ≈ 0* |
+
+> Despite parameter optimization, the deterministic ODE structure cannot capture the dynamic range of natural videos.
+
+---
+
+### Path C — Deep Learning Model (Deep Retina CNN) 🏆
+
+📁 **Location:** `src/Path_C_DeepLearning/`
+
+| Attribute | Details |
+|:----------|:--------|
+| **Type** | Spatiotemporal Convolutional Neural Network (PyTorch) |
+| **Logic** | Learns non-linear filters from raw video input (50×50 crop, 40-frame history) |
+| **Result** | **State-of-the-art performance — R ≈ 0.29** |
+
+> Successfully predicts spike timing and burst events where classical models fail.
+
+---
+
+### Path D — Foveated CNN *(In Progress)*
+
+📁 **Location:** `Models/foveated_cnn/`
+
+| Attribute | Details |
+|:----------|:--------|
+| **Concept** | Based on Tiezzi et al. (2022) |
+| **Goal** | Improve computational efficiency by mimicking biological fovea |
+| **Architecture** | Custom `FoveatedConv2d` layers with Foveal + Peripheral streams and Gaussian blending |
+
+---
+
+## Key Results
+
+Our comparative analysis (`src/Analysis/run_all_models.py`) revealed a decisive advantage for Deep Learning in natural scene decoding:
+
+| Model | Approach | Correlation (R) | Status |
+|:------|:---------|:---------------:|:------:|
+| Path A | GLM | -0.02 | ❌ Failed |
+| Path B | ODE | 0.00 | ❌ Failed |
+| **Path C** | **CNN** | **0.291** | ✅ **Success** |
+
+---
+
+## Quick Start
+
+### 1. Setup Environment
 
 ```bash
-cd Models/CBEM-master
-jupyter notebook exampleCBEMfitting.ipynb
+conda create -n retina_env python=3.11
+conda activate retina_env
+pip install numpy scipy matplotlib torch h5py scikit-learn
 ```
 
-### 2. Deep-Retina
-`Models/deep-retina-master/`
-
-Deep convolutional neural network models for predicting retinal responses.
+### 2. Prepare Data
 
 ```bash
-cd Models/deep-retina-master/scripts
-python fit_models.py --expt <expt> --stim <stim> --model BN_CNN
+cd src/01_Data_Prep
+python prepare_ns_dataset_v2.py
 ```
 
-**Available models**: `BN_CNN`, `LN_softplus`, `LN_sigmoid`, `LN_relu`, `LN_rbf`
-
-### 3. Wu Nature Communications 2024
-`Models/wu-nature-comms-2024-master/`
-
-State-of-the-art model for stimulus reconstruction from retinal responses.
+### 3. Train Models
 
 ```bash
-cd Models/wu-nature-comms-2024-master
-jupyter notebook SUBMISSION_flashed_reconstruction_demo.ipynb
+# Train the CNN (Path C)
+python src/Path_C_DeepLearning/train_cnn_model.py
+
+# Train the Foveated Model (Path D)
+python Models/foveated_cnn/train_foveated.py
 ```
 
-## 🚀 Quick Start
-
-1. **Verify installation**:
-   ```bash
-   cd src
-   python run_all_models.py
-   ```
-
-2. **Run a specific model** - see `QUICK_START.md` for detailed instructions.
-
-## 🔬 Custom Analysis Pipeline
-
-A set of scripts in `src/` for processing the Karamanlis dataset and training custom models.
-
-```mermaid
-flowchart LR
-    CFG[config.py] --> A[generate_stimulus.py]
-    CFG --> B[data_loader.py]
-    CFG --> C[find_best_cell.py]
-    CFG --> D[analyze_rf.py]
-    CFG --> E[train_ln_model.py]
-    A --> B
-    B --> D
-    B --> E
-```
-
-### Scripts
-
-| Script | Description |
-|--------|-------------|
-| `config.py` | Centralized configuration with dynamic relative paths for `BASE_PATH` and `SESSION` |
-| `generate_stimulus.py` | Generates white noise stimulus using the ran1 RNG algorithm (compiles C++ for exact reproducibility) |
-| `data_loader.py` | Synchronizes spike times with frame times and creates `training_dataset_wn.h5` |
-| `find_best_cell.py` | Analyzes cells by spike count and recommends the most active cell |
-| `analyze_rf.py` | Computes Spike-Triggered Average (STA) for receptive field mapping |
-| `train_ln_model.py` | Trains a Linear-Nonlinear (LN) model using PyTorch with Poisson loss |
-
-### Typical Workflow
+### 4. Run Final Comparison
 
 ```bash
-cd src
-
-# Step 1: Generate the white noise stimulus (compiles and runs C++)
-python generate_stimulus.py
-
-# Step 2: Find the best cell to analyze
-python find_best_cell.py
-
-# Step 3: Prepare training data (syncs spikes with frames)
-python data_loader.py
-
-# Step 4: Analyze receptive field via STA
-python analyze_rf.py
-
-# Step 5: Train an LN model
-python train_ln_model.py
+# Generates the comparison plot (Figure 1 of the report)
+python src/Analysis/run_all_models.py
 ```
 
-## 📦 Requirements
+---
 
-- Python 3.11+
-- NumPy, SciPy, Matplotlib
-- TensorFlow/Keras (Deep-Retina)
-- PyTorch (Wu Nature)
-- JAX (CBEM)
-- Jupyter Notebook
-
-Install dependencies:
-```bash
-pip install numpy scipy matplotlib tensorflow torch jax h5py jupyter
-```
-
-## 📚 Educational Materials
-
-The `Written-materials/` folder contains:
-- MIT 9.40 Neural Computation lecture notes (Lectures 1-20)
-- Research papers on retinal processing
-- eLife publications on neural coding
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 Retina-Comp-Project/
-├── data/                          # Experimental spike train data
-│   └── 10.12751_g-node.2j3d2i/   # Karamanlis & Gollisch 2021 dataset
-├── Models/                        # Third-party computational models
-│   ├── CBEM-master/              # Conductance-based Encoding Model
-│   ├── deep-retina-master/       # Deep neural network models
-│   └── wu-nature-comms-2024-master/  # Stimulus reconstruction
-├── src/                           # Custom analysis pipeline
-│   ├── config.py                 # Centralized path configuration
-│   ├── generate_stimulus.py      # White noise stimulus generator
-│   ├── data_loader.py            # Training data preparation
-│   ├── find_best_cell.py         # Cell selection by spike count
-│   ├── analyze_rf.py             # STA receptive field analysis
-│   ├── train_ln_model.py         # LN model training (PyTorch)
-│   └── run_all_models.py         # Verification script
-├── QUICK_START.md                # Model usage guide
-└── Written-materials/            # Lectures and papers
+│
+├── data/                          # Raw recordings & Processed H5 files
+│
+├── Models/                        # External Repos & New Architectures
+│   └── foveated_cnn/              # Path D: Foveated Neural Network
+│
+├── src/                           # Source Code
+│   ├── 01_Data_Prep/              # Data reconstruction pipeline
+│   ├── Path_A_CBEM/               # GLM Model scripts
+│   ├── Path_B_Retinomorphic/      # ODE Simulation scripts
+│   ├── Path_C_DeepLearning/       # CNN Model scripts
+│   ├── Analysis/                  # Final comparison & plotting
+│   └── config.py                  # Global configuration
+│
+└── Written-materials/             # Reports & Papers
 ```
 
-## 📖 References
+---
 
-1. Karamanlis D & Gollisch T (2021). Nonlinear spatial integration underlies the diversity of retinal ganglion cell responses to natural images. *J Neurosci* 41:3479-3498.
+## References
 
-2. McIntosh L, Maheswaranathan N, Nayebi A, Ganguli S, Baccus S (2016). Deep Learning Models of the Retinal Response to Natural Scenes. *NIPS*.
+1. **Karamanlis D & Gollisch T** (2021). *Nonlinear spatial integration underlies the diversity of retinal ganglion cell responses to natural images.* Journal of Neuroscience.
 
-3. Wu Y et al. (2024). Neural decoding of natural images. *Nature Communications*.
+2. **McIntosh L et al.** (2016). *Deep Learning Models of the Retinal Response to Natural Scenes.* NIPS.
 
-## 📄 License
+3. **Tiezzi M et al.** (2022). *Foveated Neural Computation.* ECML PKDD.
 
-See individual model directories for their respective licenses.
+---
 
-## ✉️ Contact
+## Authors
 
-For questions about the data, please refer to the original publications and datasets.
+**Jonathan Dadcha** · **Adar Shapira**
 
+---
+
+*Built with ❤️ for computational neuroscience*
