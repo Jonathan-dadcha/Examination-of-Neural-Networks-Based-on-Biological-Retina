@@ -7,12 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 import h5py
+import torch.nn.functional as F
 
-# ייבוא השכבה החדשה (נמצאת באותה תיקייה)
-from foveated_layers import FoveatedConv2d
-
-# --- הגדרת נתיבים ---
-# תיקון: מוצאים את תיקיית src ביחס למיקום הקובץ הנוכחי
+# --- Path Configuration ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.abspath(os.path.join(current_dir, '..', '..', 'src'))
 sys.path.append(src_dir)
@@ -22,76 +19,83 @@ try:
 except ImportError:
     BASE_PATH = os.path.abspath(os.path.join(src_dir, '..'))
 
-# --- הגדרות ---
+# --- Hyperparameters ---
 DATA_FILE = os.path.join(BASE_PATH, 'processed_data', 'training_dataset_ns_full.h5')
 CHECKPOINT_PATH = os.path.join(BASE_PATH, 'processed_data', 'foveated_cnn_checkpoint.pth')
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 HISTORY_SIZE = 40
 BATCH_SIZE = 64
-EPOCHS = 35
-LEARNING_RATE = 0.001
+EPOCHS = 50
+LEARNING_RATE = 1e-3 # Standard LR for Path C success
 
 # ==========================================
-# 1. המודל החדש: Foveated Deep Retina
+# 1. Bio-Inspired Foveated CNN (Bio-Blur)
 # ==========================================
 class FoveatedRetina(nn.Module):
     def __init__(self, history_size, spatial_shape):
         super(FoveatedRetina, self).__init__()
         H, W = spatial_shape
         
-        # Foveated Layer: רדיוס 0.4 אומר ש-40% מהמרכז חד, השאר מטושטש
-        self.conv1 = FoveatedConv2d(history_size, 16, kernel_size=15, img_size=(H, W), fovea_radius=0.4)
+        # Spatial Mask: Center=1, Edges=0 (Gaussian)
+        y = torch.linspace(-1, 1, H)
+        x = torch.linspace(-1, 1, W)
+        yy, xx = torch.meshgrid(y, x, indexing='ij')
+        dist = torch.sqrt(xx**2 + yy**2)
+        # Sigma 0.6 focuses on the central 30x30 area
+        mask = torch.exp(-(dist**2) / (2 * 0.6**2))
+        self.register_buffer('fovea_mask', mask.view(1, 1, H, W))
+        
+        # Gaussian Blur Kernel (Fixed)
+        k_size = 7
+        sigma_blur = 2.0
+        k = torch.linspace(-(k_size // 2), k_size // 2, k_size)
+        gauss = torch.exp(-k**2 / (2 * sigma_blur**2))
+        kernel_2d = gauss[:, None] * gauss[None, :]
+        kernel_2d /= kernel_2d.sum()
+        self.register_buffer('blur_kernel', kernel_2d.view(1, 1, k_size, k_size))
+
+        # CNN Backbone (Same as Path C for guaranteed learning)
+        self.conv1 = nn.Conv2d(history_size, 16, kernel_size=15)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu1 = nn.ReLU()
         
-        # חישוב גודל ביניים (Valid padding)
-        h_1 = H - 14
-        w_1 = W - 14
-        
-        # שכבה רגילה שנייה
         self.conv2 = nn.Conv2d(16, 8, kernel_size=9)
         self.bn2 = nn.BatchNorm2d(8)
         self.relu2 = nn.ReLU()
         
-        # חישוב גודל סופי
-        h_out = h_1 - 8
-        w_out = w_1 - 8
-        
+        h_out = (H - 15 + 1) - 9 + 1
+        w_out = (W - 15 + 1) - 9 + 1
         self.flat_dim = 8 * h_out * w_out
         self.dense = nn.Linear(self.flat_dim, 1)
         self.softplus = nn.Softplus()
 
     def forward(self, x):
-        x = self.relu1(self.bn1(self.conv1(x)))
+        # Apply Foveated Pre-processing
+        B, C, H, W = x.shape
+        x_reshaped = x.view(B*C, 1, H, W)
+        # Peripheral blur
+        x_blurred = F.conv2d(x_reshaped, self.blur_kernel, padding=3).view(B, C, H, W)
+        # Combine: Sharp Center + Blurred Periphery
+        x_foveated = (x * self.fovea_mask) + (x_blurred * (1 - self.fovea_mask))
+        
+        # Neural Processing
+        x = self.relu1(self.bn1(self.conv1(x_foveated)))
         x = self.relu2(self.bn2(self.conv2(x)))
         x = x.view(x.size(0), -1)
-        out = self.softplus(self.dense(x))
-        return out
+        return self.softplus(self.dense(x))
 
 # ==========================================
-# 2. פונקציות עזר
+# 2. Robust Data Loading
 # ==========================================
 def load_data():
-    print("📂 Loading H5 Dataset...")
-    if not os.path.exists(DATA_FILE):
-        raise FileNotFoundError(f"Cannot find data file: {DATA_FILE}")
-        
+    print("📂 [Data] Loading H5 Dataset...")
     with h5py.File(DATA_FILE, 'r') as f:
-        X = f['X'][:]
-        Y = f['Y'][:]
-    
-    # חיתוך מרחבי 50x50
+        X, Y = f['X'][:], f['Y'][:]
     CENTER_X, CENTER_Y = 27, 47
     crop = 50
     c_h = crop // 2
-    
-    y_start = max(0, CENTER_Y - c_h)
-    y_end = min(X.shape[1], CENTER_Y + c_h)
-    x_start = max(0, CENTER_X - c_h)
-    x_end = min(X.shape[2], CENTER_X + c_h)
-    
-    X = X[:, y_start:y_end, x_start:x_end]
+    X = X[:, CENTER_Y-c_h:CENTER_Y+c_h, CENTER_X-c_h:CENTER_X+c_h]
     X = (X - np.mean(X)) / (np.std(X) + 1e-6)
     return X, Y
 
@@ -103,128 +107,54 @@ def create_sequences(X, Y, history):
         X_seq[i] = X[i:i+history]
     return torch.FloatTensor(X_seq), torch.FloatTensor(Y_seq)
 
-def poisson_loss(pred, target):
-    return (pred - target * torch.log(pred + 1e-6)).mean()
+def find_active_block(Y, train_len, test_len):
+    print("🔍 [Search] Finding active block...")
+    best_start, max_spikes = 0, 0
+    total = train_len + test_len
+    for start in range(0, len(Y) - total, 2500):
+        s = np.sum(Y[start : start + total])
+        # Check if test set also has action
+        if s > max_spikes and np.sum(Y[start+train_len : start+total]) > 500:
+            max_spikes, best_start = s, start
+    return best_start
 
 # ==========================================
-# 3. Main Training Loop (עם מנגנון Resume)
+# 3. Main
 # ==========================================
 def main():
-    print(f"🚀 Initializing Foveated CNN on: {DEVICE}")
-    
-    # 1. טעינת נתונים
     X_raw, Y_raw = load_data()
+    train_len, test_len = 50000, 10000
+    best_start = find_active_block(Y_raw, train_len, test_len)
     
-    # פיצול
-    split_idx = int(len(X_raw) * 0.8)
-    X_train_raw, X_test_raw = X_raw[:split_idx], X_raw[split_idx:]
-    Y_train_raw, Y_test_raw = Y_raw[:split_idx], Y_raw[split_idx:]
+    X_train, Y_train = create_sequences(X_raw[best_start:best_start+train_len], Y_raw[best_start:best_start+train_len], HISTORY_SIZE)
+    X_test, Y_test = create_sequences(X_raw[best_start+train_len:best_start+train_len+test_len], Y_raw[best_start+train_len:best_start+train_len+test_len], HISTORY_SIZE)
     
-    train_limit = 30000 
-    test_limit = 5000
+    train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=BATCH_SIZE, shuffle=True)
     
-    print("✂️ Creating sequences...")
-    X_train_tensor, Y_train_tensor = create_sequences(
-        X_train_raw[-train_limit:], Y_train_raw[-train_limit:], HISTORY_SIZE)
-    X_test_tensor, Y_test_tensor = create_sequences(
-        X_test_raw[:test_limit], Y_test_raw[:test_limit], HISTORY_SIZE)
-    
-    train_dataset = TensorDataset(X_train_tensor, Y_train_tensor)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    
-    # 2. אתחול מודל
     model = FoveatedRetina(HISTORY_SIZE, (50, 50)).to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    
-    # --- מנגנון RESUME חכם ---
-    start_epoch = 0
-    train_losses = []
-    test_corrs = []
+    criterion = nn.PoissonNLLLoss(log_input=False)
 
-    if os.path.exists(CHECKPOINT_PATH):
-        print(f"🔄 Found checkpoint at {CHECKPOINT_PATH}. Resuming training...")
-        # טעינה בטוחה (weights_only=False כדי לטעון גם מספרים ורשימות)
-        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-        
-        model.load_state_dict(checkpoint['model_state_dict'])
-        
-        # טעינת מצב האופטימייזר (חשוב ל-Momentum של Adam)
-        if 'optimizer_state_dict' in checkpoint:
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        
-        # שחזור האפוק וההיסטוריה
-        if 'epoch' in checkpoint:
-            start_epoch = checkpoint['epoch'] + 1
-            print(f"⏩ Continuing from Epoch {start_epoch + 1}")
-        
-        if 'train_losses' in checkpoint:
-            train_losses = checkpoint['train_losses']
-            test_corrs = checkpoint['test_corrs']
-    else:
-        print("🆕 No checkpoint found. Starting from scratch.")
-
-    # 3. לולאת האימון
-    for epoch in range(start_epoch, EPOCHS):
+    print(f"🚀 Training Foveated Bio-Blur CNN on {DEVICE}")
+    for epoch in range(EPOCHS):
         model.train()
         epoch_loss = 0
-        
-        for X_batch, Y_batch in train_loader:
-            X_batch, Y_batch = X_batch.to(DEVICE), Y_batch.to(DEVICE)
-            
+        for X_b, Y_b in train_loader:
+            X_b, Y_b = X_b.to(DEVICE), Y_b.to(DEVICE)
             optimizer.zero_grad()
-            outputs = model(X_batch).squeeze()
-            loss = poisson_loss(outputs, Y_batch)
+            outputs = model(X_b).squeeze()
+            loss = criterion(outputs, Y_b)
             loss.backward()
             optimizer.step()
-            
             epoch_loss += loss.item()
             
-        avg_loss = epoch_loss / len(train_loader)
-        train_losses.append(avg_loss)
-        
-        # Validation
         model.eval()
         with torch.no_grad():
-            X_test_dev = X_test_tensor.to(DEVICE)
-            preds = model(X_test_dev).squeeze().cpu().numpy()
-            targets = Y_test_tensor.numpy()
+            preds = model(X_test.to(DEVICE)).squeeze().cpu().numpy()
+            targets = Y_test.numpy()
+            corr = np.corrcoef(preds, targets)[0, 1] if np.std(preds) > 1e-6 else 0.0
             
-            if np.std(preds) > 1e-5 and np.std(targets) > 1e-5:
-                corr = np.corrcoef(preds, targets)[0, 1]
-            else:
-                corr = 0.0
-            test_corrs.append(corr)
-            
-        print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.4f} | Test Corr: {corr:.4f}")
-        
-        # שמירת צ'קפוינט מלא (כולל הכל)
-        if (epoch+1) % 5 == 0:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_losses': train_losses,
-                'test_corrs': test_corrs
-            }, CHECKPOINT_PATH)
-            print(f"💾 Checkpoint saved (Epoch {epoch+1}).")
-
-    # 4. שרטוט סופי
-    print(f"🏆 Final Result (Foveated): {test_corrs[-1] if test_corrs else 0:.4f}")
-    
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Loss')
-    plt.title('Training Loss')
-    plt.grid()
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(test_corrs, color='purple', label='Correlation')
-    plt.title(f'Test Correlation (Max: {max(test_corrs) if test_corrs else 0:.4f})')
-    plt.grid()
-    
-    save_fig_path = os.path.join(BASE_PATH, 'processed_data', 'Figure_Foveated_CNN.png')
-    plt.savefig(save_fig_path)
-    print(f"✅ Graph saved to {save_fig_path}")
+        print(f"Epoch {epoch+1:02d}/50 | Loss: {epoch_loss/len(train_loader):.4f} | Test Corr: {corr:.4f}")
 
 if __name__ == "__main__":
     main()
