@@ -42,7 +42,7 @@ class FoveatedDriftDataset(Dataset):
         print(f"Dataset Loaded: {self.X.shape[0]} frames.")
         print(f"   -> Foveated mode: fovea {fovea_size}x{fovea_size}, "
               f"peripheral {crop_size // 2}x{crop_size // 2}")
-        print("   -> Micro-Drift preserved (std=0.25, clip=3px)")
+        print("   -> Micro-Drift preserved (std=0.15, clip=2px)")
 
     def __len__(self):
         return len(self.Y) - self.history_size
@@ -50,10 +50,10 @@ class FoveatedDriftDataset(Dataset):
     def __getitem__(self, idx):
         raw_clip = self.X[idx : idx + self.history_size]
 
-        drift_x = np.cumsum(np.random.randn(self.history_size) * 0.25)
-        drift_y = np.cumsum(np.random.randn(self.history_size) * 0.25)
-        drift_x = np.clip(drift_x, -3, 3)
-        drift_y = np.clip(drift_y, -3, 3)
+        drift_x = np.cumsum(np.random.randn(self.history_size) * 0.15)
+        drift_y = np.cumsum(np.random.randn(self.history_size) * 0.15)
+        drift_x = np.clip(drift_x, -2, 2)
+        drift_y = np.clip(drift_y, -2, 2)
 
         frames = []
         for t in range(self.history_size):

@@ -1,4 +1,3 @@
-import sys
 import os
 import torch
 import torch.nn as nn
@@ -57,7 +56,7 @@ def evaluate_model(model, loader, device):
             all_targets.extend(targets.numpy().flatten())
             
     # חישוב קורלציה
-    if np.std(all_preds) < 1e-9: # הגנה מפני חלוקה באפס אם המודל מוציא קו ישר
+    if np.std(all_preds) < 1e-9: 
         return 0.0
     
     correlation = np.corrcoef(all_preds, all_targets)[0, 1]
@@ -71,7 +70,6 @@ def main():
     try:
         full_dataset = DriftSimulationDataset(IMAGES_PATH, SPIKES_PATH)
         
-        # חלוקה: 80% אימון, 20% בדיקה
         train_size = int(0.8 * len(full_dataset))
         test_size = len(full_dataset) - train_size
         train_ds, test_ds = random_split(full_dataset, [train_size, test_size])
@@ -97,7 +95,7 @@ def main():
     print("💪 Starting Training Loop...")
     
     for epoch in range(EPOCHS):
-        model.train() # מצב אימון
+        model.train() 
         epoch_loss = 0
         
         for batch_idx, (inputs, targets) in enumerate(train_loader):
@@ -114,10 +112,8 @@ def main():
             if batch_idx % 100 == 0:
                 print(f"   Batch {batch_idx}: Loss {loss.item():.4f}")
         
-        # סוף Epoch - חישוב ממוצעים
         avg_train_loss = epoch_loss / len(train_loader)
         
-        # בדיקת קורלציה על סט הבדיקה
         current_correlation = evaluate_model(model, test_loader, DEVICE)
         
         train_loss_history.append(avg_train_loss)
@@ -130,7 +126,6 @@ def main():
     torch.save(model.state_dict(), "checkpoints/drift_model_final.pth")
     print("💾 Model saved.")
 
-    # גרף כפול: גם Loss וגם Correlation
     fig, ax1 = plt.subplots(figsize=(10, 5))
 
     ax1.set_xlabel('Epoch')

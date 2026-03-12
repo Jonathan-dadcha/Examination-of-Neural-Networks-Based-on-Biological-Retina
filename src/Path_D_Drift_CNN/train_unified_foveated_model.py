@@ -1,0 +1,461 @@
+import os
+import h5py
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, random_split
+import matplotlib.pyplot as plt
+from scipy.ndimage import uniform_filter
+
+
+IMAGES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/natural_scenes.h5"
+SPIKES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/training_dataset_ns_full.h5"
+
+DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+BATCH_SIZE = 256
+EPOCHS = 120
+
+
+# ---------------------------------------------------------------------------
+# Unified Foveated Dataset — Saliency-Guided FOA (Gravitational Attention)
+# ---------------------------------------------------------------------------
+class UnifiedFoveatedDataset(Dataset):
+    """
+    Two-stream foveated dataset with saliency-guided Focus of Attention.
+
+    Implements the "gravitational attention" mechanism from Tiezzi et al. (2022):
+    instead of random micro-drift, the FOA is attracted toward regions of high
+    local contrast (variance) within each frame, simulating biological saccades.
+
+    Returns per sample:
+        fovea:      (history_size, 20, 20) — high-res crop centered on FOA
+        peripheral: (history_size, 50, 50) — full-res crop (for dilated convs)
+        foa_coords: (2,)                  — normalized FOA position in [-1, 1]
+        target:     (1,)                  — spike count
+    """
+
+    def __init__(self, images_path, spikes_path, history_size=40, crop_size=50,
+                 fovea_size=20, alpha=0.4, jitter_std=0.1, max_step=3.0,
+                 saliency_window=5):
+        self.history_size = history_size
+        self.crop_size = crop_size
+        self.fovea_size = fovea_size
+        self.alpha = alpha
+        self.jitter_std = jitter_std
+        self.max_step = max_step
+        self.saliency_window = saliency_window
+
+        self.half_fovea = fovea_size // 2
+        self.half_crop = crop_size // 2
+
+        self.foa_min = float(self.half_fovea)
+        self.foa_max = float(crop_size - self.half_fovea)
+
+        print(f"Loading Synced Data from: {os.path.basename(spikes_path)}")
+
+        if not os.path.exists(spikes_path):
+            raise FileNotFoundError(f"File not found: {spikes_path}")
+
+        with h5py.File(spikes_path, 'r') as f:
+            self.X = f['X'][:]
+            self.Y = f['Y'][:]
+
+        self.center_x = 27
+        self.center_y = 47
+
+        mean = np.mean(self.X)
+        std = np.std(self.X)
+        self.X = (self.X - mean) / (std + 1e-6)
+
+        print(f"Dataset Loaded: {self.X.shape[0]} frames.")
+        print(f"   -> Unified Foveated mode: fovea {fovea_size}x{fovea_size}, "
+              f"peripheral {crop_size}x{crop_size} (full-res, dilated)")
+        print(f"   -> Saliency-guided FOA (alpha={alpha}, jitter={jitter_std}, "
+              f"max_step={max_step}px)")
+
+    def _compute_saliency(self, frame):
+        """Local variance via sliding window — contrast/saliency proxy."""
+        f64 = frame.astype(np.float64)
+        local_mean = uniform_filter(f64, size=self.saliency_window)
+        local_sq_mean = uniform_filter(f64 ** 2, size=self.saliency_window)
+        return np.maximum(local_sq_mean - local_mean ** 2, 0.0)
+
+    def _saliency_gradient(self, saliency, x, y):
+        """Finite-difference gradient of saliency at integer position (x, y)."""
+        h, w = saliency.shape
+        ix = int(np.clip(round(x), 0, w - 1))
+        iy = int(np.clip(round(y), 0, h - 1))
+
+        x_lo, x_hi = max(ix - 1, 0), min(ix + 1, w - 1)
+        y_lo, y_hi = max(iy - 1, 0), min(iy + 1, h - 1)
+
+        dx = (saliency[iy, x_hi] - saliency[iy, x_lo]) / max(x_hi - x_lo, 1)
+        dy = (saliency[y_hi, ix] - saliency[y_lo, ix]) / max(y_hi - y_lo, 1)
+        return dx, dy
+
+    def __len__(self):
+        return len(self.Y) - self.history_size
+
+    def __getitem__(self, idx):
+        raw_clip = self.X[idx: idx + self.history_size]
+
+        H, W = raw_clip.shape[1], raw_clip.shape[2]
+        cx = max(self.half_crop, min(W - self.half_crop, self.center_x))
+        cy = max(self.half_crop, min(H - self.half_crop, self.center_y))
+
+        crops = raw_clip[:,
+                         cy - self.half_crop: cy + self.half_crop,
+                         cx - self.half_crop: cx + self.half_crop]
+
+        foa_x = float(self.crop_size) / 2.0
+        foa_y = float(self.crop_size) / 2.0
+
+        fovea_frames = []
+        for t in range(self.history_size):
+            frame = crops[t]
+            saliency = self._compute_saliency(frame)
+
+            grad_x, grad_y = self._saliency_gradient(saliency, foa_x, foa_y)
+
+            grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2) + 1e-8
+            grad_x /= grad_mag
+            grad_y /= grad_mag
+
+            step_x = self.alpha * grad_x + np.random.randn() * self.jitter_std
+            step_y = self.alpha * grad_y + np.random.randn() * self.jitter_std
+
+            step_mag = np.sqrt(step_x ** 2 + step_y ** 2)
+            if step_mag > self.max_step:
+                scale = self.max_step / step_mag
+                step_x *= scale
+                step_y *= scale
+
+            foa_x = np.clip(foa_x + step_x, self.foa_min, self.foa_max)
+            foa_y = np.clip(foa_y + step_y, self.foa_min, self.foa_max)
+
+            fx = int(np.clip(round(foa_x), self.half_fovea,
+                             self.crop_size - self.half_fovea))
+            fy = int(np.clip(round(foa_y), self.half_fovea,
+                             self.crop_size - self.half_fovea))
+
+            fovea_frame = frame[fy - self.half_fovea: fy + self.half_fovea,
+                                fx - self.half_fovea: fx + self.half_fovea]
+            fovea_frames.append(fovea_frame)
+
+        fovea = np.array(fovea_frames)
+        peripheral = crops.copy()
+
+        norm_x = (foa_x - self.crop_size / 2.0) / (self.crop_size / 2.0)
+        norm_y = (foa_y - self.crop_size / 2.0) / (self.crop_size / 2.0)
+        foa_coords = np.array([norm_x, norm_y], dtype=np.float32)
+
+        y_val = self.Y[idx + self.history_size - 1]
+
+        return (torch.FloatTensor(fovea),
+                torch.FloatTensor(peripheral),
+                torch.FloatTensor(foa_coords),
+                torch.FloatTensor([y_val]))
+
+
+# ---------------------------------------------------------------------------
+# Baseline DriftCNN (for MACs comparison only)
+# ---------------------------------------------------------------------------
+class DriftCNN(nn.Module):
+    def __init__(self, history_size=40):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(history_size, 16, kernel_size=15),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.Conv2d(16, 8, kernel_size=9),
+            nn.BatchNorm2d(8),
+            nn.ReLU(),
+        )
+        self.flat_dim = 8 * 28 * 28
+        self.regressor = nn.Sequential(
+            nn.Linear(self.flat_dim, 1),
+            nn.Softplus(),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        return self.regressor(x)
+
+
+# ---------------------------------------------------------------------------
+# Previous FoveatedDriftCNN (for MACs comparison only)
+# ---------------------------------------------------------------------------
+class FoveatedDriftCNN(nn.Module):
+    def __init__(self, history_size=40):
+        super().__init__()
+        self.fovea_stream = nn.Sequential(
+            nn.Conv2d(history_size, 16, kernel_size=9),
+            nn.BatchNorm2d(16), nn.ReLU(),
+            nn.Conv2d(16, 8, kernel_size=5),
+            nn.BatchNorm2d(8), nn.ReLU(),
+        )
+        self.fovea_flat = 8 * 8 * 8
+
+        self.peripheral_stream = nn.Sequential(
+            nn.Conv2d(history_size, 8, kernel_size=9),
+            nn.BatchNorm2d(8), nn.ReLU(),
+            nn.Conv2d(8, 4, kernel_size=7),
+            nn.BatchNorm2d(4), nn.ReLU(),
+        )
+        self.periph_flat = 4 * 11 * 11
+
+        self.regressor = nn.Sequential(
+            nn.Linear(self.fovea_flat + self.periph_flat, 128),
+            nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(128, 1), nn.Softplus(),
+        )
+
+    def forward(self, fovea, peripheral):
+        f = self.fovea_stream(fovea).view(fovea.size(0), -1)
+        p = self.peripheral_stream(peripheral).view(peripheral.size(0), -1)
+        return self.regressor(torch.cat([f, p], dim=1))
+
+
+# ---------------------------------------------------------------------------
+# Unified Foveated CNN — Dilated Peripheral (PW-FCL) + NM-FCL Modulator
+# ---------------------------------------------------------------------------
+class UnifiedFoveatedCNN(nn.Module):
+    """
+    Two-stream foveated architecture with three paper-based enhancements:
+
+    1. Fovea stream: high-res 20x20 center crop (standard convolutions).
+    2. Peripheral stream (PW-FCL): full-res 50x50 with dilated convolutions
+       that expand the effective receptive field without proportional MAC cost.
+    3. Network Modulator (NM-FCL): a small MLP conditioned on the FOA position
+       that dynamically gates the concatenated features before prediction.
+    """
+
+    def __init__(self, history_size=40):
+        super().__init__()
+
+        # --- Fovea stream: (B, 40, 20, 20) ---
+        self.fovea_stream = nn.Sequential(
+            nn.Conv2d(history_size, 16, kernel_size=9),     # -> 16 x 12 x 12
+            nn.BatchNorm2d(16), nn.ReLU(),
+            nn.Conv2d(16, 8, kernel_size=5),                # -> 8 x 8 x 8
+            nn.BatchNorm2d(8), nn.ReLU(),
+        )
+        self.fovea_flat = 8 * 8 * 8   # 512
+
+        # --- Peripheral stream with dilated convolutions: (B, 40, 50, 50) ---
+        # Dilation expands effective RF (17x17 then 5x5) while keeping actual
+        # kernel sizes small (5x5 then 3x3), preserving spatial structure
+        # better than average-pooling downscaling.
+        self.peripheral_stream = nn.Sequential(
+            nn.Conv2d(history_size, 8, kernel_size=5,
+                      dilation=4, padding=0),               # eff_k=17, -> 8 x 34 x 34
+            nn.BatchNorm2d(8), nn.ReLU(),
+            nn.Conv2d(8, 4, kernel_size=3,
+                      dilation=2, padding=0),               # eff_k=5,  -> 4 x 30 x 30
+            nn.BatchNorm2d(4), nn.ReLU(),
+            nn.AdaptiveAvgPool2d(5),                        #           -> 4 x 5 x 5
+        )
+        self.periph_flat = 4 * 5 * 5  # 100
+
+        combined_dim = self.fovea_flat + self.periph_flat   # 576
+
+        # --- Network Modulator (NM-FCL) ---
+        # Takes normalized FOA coordinates and produces per-feature gates,
+        # allowing the network's effective weights to adapt based on where
+        # the "eye" is currently looking.
+        self.modulator = nn.Sequential(
+            nn.Linear(2, 64),
+            nn.ReLU(),
+            nn.Linear(64, combined_dim),
+            nn.Sigmoid(),
+        )
+
+        # --- Prediction head ---
+        self.regressor = nn.Sequential(
+            nn.Linear(combined_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1),
+            nn.Softplus(),
+        )
+
+    def forward(self, fovea, peripheral, foa_coords):
+        f = self.fovea_stream(fovea)
+        f = f.view(f.size(0), -1)
+
+        p = self.peripheral_stream(peripheral)
+        p = p.view(p.size(0), -1)
+
+        combined = torch.cat([f, p], dim=1)
+
+        gate = self.modulator(foa_coords)
+        combined = combined * gate
+
+        return self.regressor(combined)
+
+
+# ---------------------------------------------------------------------------
+# MACs / FLOPS comparison — three-way table
+# ---------------------------------------------------------------------------
+def compare_flops(history_size=40):
+    """Print MACs comparison: Baseline vs Previous Foveated vs Unified."""
+    try:
+        from thop import profile
+    except ImportError:
+        print("[!] `thop` not installed — skipping MACs comparison.")
+        return
+
+    baseline = DriftCNN(history_size)
+    prev_fov = FoveatedDriftCNN(history_size)
+    unified = UnifiedFoveatedCNN(history_size)
+
+    b_in = (torch.randn(1, history_size, 50, 50),)
+    pf_in = (torch.randn(1, history_size, 20, 20),
+             torch.randn(1, history_size, 25, 25))
+    u_in = (torch.randn(1, history_size, 20, 20),
+            torch.randn(1, history_size, 50, 50),
+            torch.randn(1, 2))
+
+    b_macs, b_params = profile(baseline, inputs=b_in, verbose=False)
+    pf_macs, pf_params = profile(prev_fov, inputs=pf_in, verbose=False)
+    u_macs, u_params = profile(unified, inputs=u_in, verbose=False)
+
+    print("\n" + "=" * 70)
+    print("  FLOPS / MACs COMPARISON")
+    print("=" * 70)
+    print(f"  {'Model':<30} {'MACs':>15} {'Params':>12}")
+    print("-" * 70)
+    print(f"  {'Baseline DriftCNN':<30} {b_macs:>15,.0f} {b_params:>12,.0f}")
+    print(f"  {'Prev FoveatedDriftCNN':<30} {pf_macs:>15,.0f} {pf_params:>12,.0f}")
+    print(f"  {'Unified FoveatedCNN':<30} {u_macs:>15,.0f} {u_params:>12,.0f}")
+    print("-" * 70)
+
+    if u_macs > 0 and b_macs > 0:
+        savings_vs_base = (1 - u_macs / b_macs) * 100
+        savings_vs_prev = (1 - u_macs / pf_macs) * 100 if pf_macs > 0 else 0
+        print(f"  Unified vs Baseline: {b_macs / u_macs:.1f}x  "
+              f"({savings_vs_base:.1f}% fewer MACs)")
+        print(f"  Unified vs Previous: {pf_macs / u_macs:.1f}x  "
+              f"({savings_vs_prev:+.1f}% MACs)")
+    print("=" * 70 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Evaluation helper
+# ---------------------------------------------------------------------------
+def evaluate_model(model, loader, device):
+    model.eval()
+    all_preds = []
+    all_targets = []
+
+    with torch.no_grad():
+        for fovea, peripheral, foa_coords, targets in loader:
+            fovea = fovea.to(device)
+            peripheral = peripheral.to(device)
+            foa_coords = foa_coords.to(device)
+            outputs = model(fovea, peripheral, foa_coords)
+
+            all_preds.extend(outputs.cpu().numpy().flatten())
+            all_targets.extend(targets.numpy().flatten())
+
+    if np.std(all_preds) < 1e-9:
+        return 0.0
+
+    return np.corrcoef(all_preds, all_targets)[0, 1]
+
+
+# ---------------------------------------------------------------------------
+# Main training loop
+# ---------------------------------------------------------------------------
+def main():
+    print(f"Initializing Unified Foveated Experiment on {DEVICE}")
+
+    compare_flops()
+
+    try:
+        full_dataset = UnifiedFoveatedDataset(IMAGES_PATH, SPIKES_PATH)
+
+        train_size = int(0.8 * len(full_dataset))
+        test_size = len(full_dataset) - train_size
+        train_ds, test_ds = random_split(full_dataset, [train_size, test_size])
+
+        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+        test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+
+        print(f"Data Split: {len(train_ds)} training / {len(test_ds)} test samples.")
+
+    except Exception as e:
+        print(f"Data Error: {e}")
+        return
+
+    model = UnifiedFoveatedCNN().to(DEVICE)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    criterion = nn.PoissonNLLLoss(log_input=False)
+
+    train_loss_history = []
+    test_corr_history = []
+
+    print("Starting Training Loop...")
+
+    for epoch in range(EPOCHS):
+        model.train()
+        epoch_loss = 0
+
+        for batch_idx, (fovea, peripheral, foa_coords, targets) in enumerate(train_loader):
+            fovea = fovea.to(DEVICE)
+            peripheral = peripheral.to(DEVICE)
+            foa_coords = foa_coords.to(DEVICE)
+            targets = targets.to(DEVICE)
+
+            optimizer.zero_grad()
+            outputs = model(fovea, peripheral, foa_coords)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+            if batch_idx % 100 == 0:
+                print(f"   Batch {batch_idx}: Loss {loss.item():.4f}")
+
+        avg_train_loss = epoch_loss / len(train_loader)
+        current_correlation = evaluate_model(model, test_loader, DEVICE)
+
+        train_loss_history.append(avg_train_loss)
+        test_corr_history.append(current_correlation)
+
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+              f"Loss: {avg_train_loss:.4f} | "
+              f"Test Correlation: {current_correlation:.4f} | "
+              f"LR: {current_lr:.6f}")
+
+    os.makedirs("checkpoints", exist_ok=True)
+    torch.save(model.state_dict(), "checkpoints/unified_foveated_model_final.pth")
+    print("Model saved to checkpoints/unified_foveated_model_final.pth")
+
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss", color="tab:blue")
+    ax1.plot(train_loss_history, color="tab:blue", label="Train Loss")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+
+    ax2 = ax1.twinx()
+    ax2.set_ylabel("Correlation (Pearson)", color="tab:orange")
+    ax2.plot(test_corr_history, color="tab:orange", label="Test Correlation")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+
+    plt.title("Unified Foveated CNN: Loss vs Correlation")
+    fig.tight_layout()
+    plt.savefig("checkpoints/unified_foveated_training_curve.png", dpi=150)
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

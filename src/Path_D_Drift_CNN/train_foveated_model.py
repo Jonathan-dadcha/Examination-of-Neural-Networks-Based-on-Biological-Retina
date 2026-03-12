@@ -13,7 +13,7 @@ SPIKES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g
 
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 BATCH_SIZE = 256
-EPOCHS = 100
+EPOCHS = 120
 
 # ---------------------------------------------------------------------------
 # Baseline DriftCNN (imported here for FLOPS comparison only)
@@ -71,7 +71,10 @@ class FoveatedDriftCNN(nn.Module):
         self.periph_flat = 4 * 11 * 11  # 484
 
         self.regressor = nn.Sequential(
-            nn.Linear(self.fovea_flat + self.periph_flat, 1),
+            nn.Linear(self.fovea_flat + self.periph_flat, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1),
             nn.Softplus(),
         )
 
@@ -135,7 +138,7 @@ def print_manual_flops():
     f_conv2 = 8 * (16 * 5 * 5) * 8 * 8
     p_conv1 = 8 * (40 * 9 * 9) * 17 * 17
     p_conv2 = 4 * (8 * 7 * 7) * 11 * 11
-    fov_linear = (512 + 484)
+    fov_linear = (512 + 484) * 128 + 128
     foveated_total = f_conv1 + f_conv2 + p_conv1 + p_conv2 + fov_linear
 
     print("\n" + "=" * 60)
@@ -201,6 +204,7 @@ def main():
     # 2. Setup Model
     model = FoveatedDriftCNN().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     criterion = nn.PoissonNLLLoss(log_input=False)
 
     train_loss_history = []
@@ -235,9 +239,13 @@ def main():
         train_loss_history.append(avg_train_loss)
         test_corr_history.append(current_correlation)
 
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+
         print(f"Epoch {epoch+1}/{EPOCHS} | "
               f"Loss: {avg_train_loss:.4f} | "
-              f"Test Correlation: {current_correlation:.4f}")
+              f"Test Correlation: {current_correlation:.4f} | "
+              f"LR: {current_lr:.6f}")
 
     # 4. Save & Plot
     os.makedirs("checkpoints", exist_ok=True)
