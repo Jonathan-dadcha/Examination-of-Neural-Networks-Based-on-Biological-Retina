@@ -6,7 +6,6 @@ from torch.utils.data import DataLoader, random_split
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ייבוא הדאטה-סט המקומי
 from drift_dataset import DriftSimulationDataset
 
 IMAGES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/natural_scenes.h5"
@@ -28,10 +27,10 @@ class DriftCNN(nn.Module):
             nn.BatchNorm2d(8),
             nn.ReLU()
         )
-        self.flat_dim = 8 * 28 * 28 
+        self.flat_dim = 8 * 28 * 28
         self.regressor = nn.Sequential(
             nn.Linear(self.flat_dim, 1),
-            nn.Softplus()
+            nn.Softplus(),
         )
 
     def forward(self, x):
@@ -42,7 +41,7 @@ class DriftCNN(nn.Module):
 
 # --- HELPER: CALCULATE CORRELATION ---
 def evaluate_model(model, loader, device):
-    model.eval() # מצב בדיקה (בלי עדכון משקולות)
+    model.eval() 
     all_preds = []
     all_targets = []
     
@@ -51,11 +50,9 @@ def evaluate_model(model, loader, device):
             inputs = inputs.to(device)
             outputs = model(inputs)
             
-            # העברה ל-CPU והמרה ל-Numpy
             all_preds.extend(outputs.cpu().numpy().flatten())
             all_targets.extend(targets.numpy().flatten())
             
-    # חישוב קורלציה
     if np.std(all_preds) < 1e-9: 
         return 0.0
     
@@ -66,7 +63,6 @@ def evaluate_model(model, loader, device):
 def main():
     print(f"🚀 Initializing Drift Experiment on {DEVICE}")
     
-    # 1. Prepare Data
     try:
         full_dataset = DriftSimulationDataset(IMAGES_PATH, SPIKES_PATH)
         
@@ -83,7 +79,6 @@ def main():
         print(f"❌ Data Error: {e}")
         return
 
-    # 2. Setup Model
     model = DriftCNN().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.PoissonNLLLoss(log_input=False)
@@ -91,7 +86,6 @@ def main():
     train_loss_history = []
     test_corr_history = []
 
-    # 3. Train
     print("💪 Starting Training Loop...")
     
     for epoch in range(EPOCHS):
@@ -121,7 +115,6 @@ def main():
         
         print(f"🏁 Epoch {epoch+1}/{EPOCHS} | Loss: {avg_train_loss:.4f} | 🏆 Test Correlation: {current_correlation:.4f}")
 
-    # 4. Save & Plot
     os.makedirs("checkpoints", exist_ok=True)
     torch.save(model.state_dict(), "checkpoints/drift_model_final.pth")
     print("💾 Model saved.")

@@ -8,23 +8,21 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
-# הוספת הנתיב ל-config (למקרה שהקובץ בתוך תיקייה פנימית)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
     from config import BASE_PATH, SESSION
 except ImportError:
     from config import BASE_PATH, SESSION
 
-# --- הגדרות ---
 DATA_FILE = os.path.join(BASE_PATH, 'processed_data', 'training_dataset_ns_full.h5')
-CHECKPOINT_PATH = os.path.join(BASE_PATH, 'processed_data', 'cnn_checkpoint.pth') # קובץ השמירה
+CHECKPOINT_PATH = os.path.join(BASE_PATH, 'processed_data', 'cnn_checkpoint.pth')
 
 CENTER_X = 27
 CENTER_Y = 47
 CROP_SIZE = 50      
 HISTORY_SIZE = 40   
 BATCH_SIZE = 64
-LEARNING_RATE = 1e-4  # קצב למידה יציב
+LEARNING_RATE = 1e-4
 EPOCHS = 35           
 REGULARIZATION = 1e-5 
 DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -50,7 +48,6 @@ class DeepRetinaDataset(Dataset):
         print(f"✂️ Cropping Input: y[{y1}:{y2}], x[{x1}:{x2}] around center ({cx},{cy})")
         self.X_cropped = X_full[:, y1:y2, x1:x2]
         
-        # נרמול
         mean = np.mean(self.X_cropped)
         std = np.std(self.X_cropped)
         self.X_cropped = (self.X_cropped - mean) / (std + 1e-6)
@@ -120,7 +117,6 @@ def train_cnn():
     criterion = nn.PoissonNLLLoss(log_input=False)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=REGULARIZATION)
     
-    # --- מנגנון טעינת צ'קפוינט ---
     start_epoch = 0
     train_losses = []
     test_correlations = []
@@ -150,14 +146,13 @@ def train_cnn():
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # הגנה
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             running_loss += loss.item()
             
         avg_loss = running_loss / len(train_loader)
         train_losses.append(avg_loss)
         
-        # הערכה
         model.eval()
         all_preds, all_targets = [], []
         with torch.no_grad():
@@ -179,7 +174,6 @@ def train_cnn():
         test_correlations.append(pcc)
         print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.4f} | Test Corr: {pcc:.4f}")
 
-        # --- שמירת צ'קפוינט כל 5 אפוקים ---
         if (epoch + 1) % 5 == 0:
             print(f"💾 Saving checkpoint to {CHECKPOINT_PATH}...")
             torch.save({
@@ -190,7 +184,6 @@ def train_cnn():
                 'test_correlations': test_correlations
             }, CHECKPOINT_PATH)
 
-    # שמירה סופית
     torch.save({
         'epoch': EPOCHS-1,
         'model_state_dict': model.state_dict(),

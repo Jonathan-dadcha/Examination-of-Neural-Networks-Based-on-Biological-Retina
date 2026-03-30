@@ -7,12 +7,11 @@ import scipy.io as sio
 import pandas as pd
 from config import BASE_PATH, SESSION
 
-# --- הגדרות ---
 PROCESSED_DIR = os.path.join(BASE_PATH, 'processed_data')
-OUTPUT_FILE = os.path.join(PROCESSED_DIR, 'training_dataset_ns_full.h5') # שם חדש: full
+OUTPUT_FILE = os.path.join(PROCESSED_DIR, 'training_dataset_ns_full.h5')
 NATURAL_SCENES_FILE = os.path.join(PROCESSED_DIR, 'natural_scenes.h5')
 
-# --- Ran1 (אותו דבר כמו קודם) ---
+# --- Ran1 RNG ---
 class Ran1:
     def __init__(self, seed):
         self.IA = 16807; self.IM = 2147483647; self.AM = 1.0/self.IM; self.IQ = 127773; self.IR = 2836
@@ -34,7 +33,7 @@ class Ran1:
         if temp > self.RNMX: return self.RNMX
         return temp
 
-# --- פונקציות עזר (Loaders) ---
+# --- Helper Functions (Loaders) ---
 class DotDict(dict):
     __getattr__ = dict.get; __setattr__ = dict.__setitem__; __delattr__ = dict.__delitem__
 
@@ -71,19 +70,18 @@ def get_frame_times():
 def prepare_dataset_v2():
     print(f"🚀 Starting Dataset Expansion (v2)...")
     
-    # 1. טעינת תמונות
+    # 1. Load images
     with h5py.File(NATURAL_SCENES_FILE, 'r') as f:
         train_imgs = f['train_images'][:]
         test_imgs = f['test_images'][:] if 'test_images' in f else np.empty((0,100,75))
-        # איחוד כל התמונות למאגר אחד (0-199 אימון, 200-299 טסט)
         all_images = np.concatenate([train_imgs, test_imgs], axis=0)
         print(f"✅ Loaded {len(all_images)} total images (Train+Test).")
 
-    # 2. שחזור הרצף
+    # 2. Reconstruct presentation sequence
     stimpara = get_stimulus_parameters()
     seed = int(stimpara.seed)
     n_repeats = int(stimpara.nrepeats) if 'nrepeats' in stimpara else 10
-    n_images = len(all_images) # אמור להיות 300 לפי שם הקובץ
+    n_images = len(all_images)
     
     print(f"🎲 Reconstructing sequence (Seed: {seed}, Images: {n_images})...")
     rng = Ran1(-abs(seed))
@@ -96,69 +94,56 @@ def prepare_dataset_v2():
         full_sequence.append(0) # Gray screen
         full_sequence.extend(temp_seq)
 
-    # 3. בדיקת התאמה לזמנים
-    ftimes = get_frame_times() # זמני התחלה של כל אירוע
+    # 3. Validate alignment with frame times
+    ftimes = get_frame_times()
     num_events = len(ftimes)
     
     print(f"📊 Stats: Sequence Length={len(full_sequence)}, FrameTimes Length={len(ftimes)}")
-    # חיתוך הרצף אם יש אי התאמה קלה (לפעמים ההקלטה נעצרה לפני הסוף)
     full_sequence = full_sequence[:num_events]
 
-    # 4. יצירת הוידאו המלא (Unroll)
+    # 4. Unroll full video
     trial_frames = int(stimpara.trialduration) if 'trialduration' in stimpara else 60
     total_video_frames = num_events * trial_frames
     
     print(f"🎞️ Expanding to FULL video: {num_events} events x {trial_frames} frames = {total_video_frames} frames")
     
     H, W = 100, 75
-    # שימוש ב-memmap כדי לא לפוצץ את הזיכרון (הקובץ יהיה גדול, כ-1.3GB)
-    # נשמור ישירות ל-H5 או נבנה בזיכרון אם יש מספיק (1.3GB זה סביר למחשב מודרני)
     X_movie = np.zeros((total_video_frames, H, W), dtype=np.uint8)
     gray_screen = np.full((H, W), 127, dtype=np.uint8)
     
     for i, img_id in enumerate(full_sequence):
-        # בחירת התמונה
         if img_id == 0: pic = gray_screen
         else: pic = all_images[img_id - 1]
         
-        # מילוי 60 פריימים זהים
         start_f = i * trial_frames
         end_f = start_f + trial_frames
         X_movie[start_f:end_f] = pic
         
         if i % 500 == 0: print(f"   Processed {i}/{num_events} events...")
 
-    # 5. סנכרון ספייקים ברזולוציה מלאה
+    # 5. Sync spikes at full video resolution
     print("⚡ Syncing spikes to full video resolution...")
     spikes_dir = os.path.join(BASE_PATH, SESSION, 'spiketimes')
-    # חיפוש התא
     cell_file = '5_SP_C8704.txt'
     if not os.path.exists(os.path.join(spikes_dir, cell_file)):
          cell_file = [f for f in os.listdir(spikes_dir) if 'SP' in f][0]
     
     spikes = pd.read_csv(os.path.join(spikes_dir, cell_file), header=None)[0].values
     
-    # בניית ציר זמן צפוף: לכל אירוע יש זמן התחלה ב-ftimes.
-    # אנחנו מחלקים את המרווח שבין ftimes[i] ל-ftimes[i+1] ל-60 חלקים שווים.
-    
-    # חישוב DT ממוצע (קצב פריימים)
-    avg_event_dur = np.mean(np.diff(ftimes)) # בערך 2 שניות
-    frame_dt = avg_event_dur / trial_frames # בערך 33ms (30Hz)
+    avg_event_dur = np.mean(np.diff(ftimes))
+    frame_dt = avg_event_dur / trial_frames
     
     print(f"   Frame DT calculated: {frame_dt*1000:.2f} ms ({1/frame_dt:.2f} Hz)")
     
-    # יצירת Bin Edges לכל הוידאו
-    # התחלה = ftimes[0], סוף = ftimes[-1] + משך אחרון
-    # אופציה פשוטה: ליצור רצף אחיד מההתחלה
     t_start = ftimes[0]
     all_frame_times = t_start + np.arange(total_video_frames + 1) * frame_dt
     
     Y_binned, _ = np.histogram(spikes, bins=all_frame_times)
     
-    # 6. שמירה
+    # 6. Save
     print(f"💾 Saving full dataset to {OUTPUT_FILE}...")
     with h5py.File(OUTPUT_FILE, 'w') as f:
-        f.create_dataset('X', data=X_movie, compression="gzip") # דחיסה תעזור כאן
+        f.create_dataset('X', data=X_movie, compression="gzip")
         f.create_dataset('Y', data=Y_binned)
         
     print("✨ DONE! FULL High-Res Dataset ready.")

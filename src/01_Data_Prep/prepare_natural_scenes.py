@@ -6,16 +6,13 @@ import h5py
 import cv2
 import glob
 from config import BASE_PATH, PROJECT_ROOT
-# --- הגדרות ---
 RAW_IMAGES_DIR = os.path.join(PROJECT_ROOT, 'data', 'raw_images')
 OUTPUT_H5 = os.path.join(BASE_PATH, 'processed_data', 'natural_scenes.h5')
 IMG_HEIGHT = 100
 IMG_WIDTH = 75
 
 def find_file(filename, search_paths):
-    """
-    מחפש קובץ ברשימה של נתיבים אפשריים ומחזיר את הראשון שנמצא
-    """
+    """Search for a file in a list of possible paths, return the first match."""
     print(f"🔍 Searching for '{filename}' in:")
     for path in search_paths:
         full_path = os.path.join(path, filename)
@@ -26,10 +23,7 @@ def find_file(filename, search_paths):
     return None
 
 def find_image_path(image_id, search_dir):
-    """
-    מחפש תמונה באופן רקורסיבי (JPG או PNG)
-    """
-    # חיפוש גמיש יותר
+    """Search for an image recursively (JPG or PNG)."""
     pattern_jpg = os.path.join(search_dir, '**', f"{image_id}.jpg")
     files = glob.glob(pattern_jpg, recursive=True)
     
@@ -43,7 +37,6 @@ def process_images(list_file_path, dataset_name, h5_file):
     print(f"\n--- Processing dataset: {dataset_name} ---")
     
     with open(list_file_path, 'r') as f:
-        # קריאת ה-IDs וניקוי רווחים
         image_ids = [line.strip() for line in f if line.strip() and not line.startswith('[')]
     
     print(f"Loaded {len(image_ids)} image IDs.")
@@ -55,20 +48,17 @@ def process_images(list_file_path, dataset_name, h5_file):
         img_path = find_image_path(img_id, RAW_IMAGES_DIR)
         
         if img_path:
-            # 1. קריאה (Grayscale)
             img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
             
             if img is None:
                 print(f"⚠️ Error reading file: {img_path}")
                 continue
 
-            # 2. שינוי גודל (Resize) ל-100x75
             img_resized = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT), interpolation=cv2.INTER_AREA)
             
             images_data.append(img_resized)
             found_count += 1
         else:
-            # הדפסה רק אם חסר, כדי לא להציף את המסך
             print(f"❌ Image ID {img_id} not found in {RAW_IMAGES_DIR}")
 
     print(f"✅ Successfully processed {found_count}/{len(image_ids)} images.")
@@ -82,11 +72,9 @@ def main():
         print(f"❌ Error: Raw images directory not found at {RAW_IMAGES_DIR}")
         return
 
-    # --- רשימת המקומות לחיפוש קבצי הטקסט ---
-    # כאן הוספתי את הנתיב המדויק ששלחת לי
     possible_locs = [
-        os.path.join(RAW_IMAGES_DIR, 'BSDS'),                    # הנתיב ששלחת
-        os.path.join(BASE_PATH, 'code_for_stim_reconstruction'), # הנתיב המקורי
+        os.path.join(RAW_IMAGES_DIR, 'BSDS'),
+        os.path.join(BASE_PATH, 'code_for_stim_reconstruction'),
         RAW_IMAGES_DIR
     ]
     
@@ -98,7 +86,6 @@ def main():
         print("Please make sure the file is inside: data/raw_images/BSDS/")
         return
 
-    # יצירת התיקייה ליעד אם לא קיימת
     os.makedirs(os.path.dirname(OUTPUT_H5), exist_ok=True)
 
     print(f"\n💾 Creating H5 dataset at: {OUTPUT_H5}")
