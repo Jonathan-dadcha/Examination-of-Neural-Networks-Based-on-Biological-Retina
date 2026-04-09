@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 import h5py
 import torch.nn.functional as F
@@ -22,7 +21,7 @@ except ImportError:
 # --- Hyperparameters ---
 DATA_FILE = os.path.join(BASE_PATH, 'processed_data', 'training_dataset_ns_full.h5')
 CHECKPOINT_PATH = os.path.join(BASE_PATH, 'processed_data', 'foveated_cnn_checkpoint.pth')
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 
 HISTORY_SIZE = 40
 BATCH_SIZE = 64

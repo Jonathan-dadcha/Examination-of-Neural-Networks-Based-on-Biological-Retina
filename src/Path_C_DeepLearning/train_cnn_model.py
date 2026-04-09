@@ -25,7 +25,7 @@ BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
 EPOCHS = 35           
 REGULARIZATION = 1e-5 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 
 print(f"🚀 Training CNN on device: {DEVICE}")
 

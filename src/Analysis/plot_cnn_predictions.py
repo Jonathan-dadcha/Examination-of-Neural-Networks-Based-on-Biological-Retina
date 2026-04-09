@@ -38,7 +38,7 @@ FOVEATED_CHECKPOINT = os.path.join(
     PROJECT_ROOT, "checkpoints", "unified_foveated_model_final.pth"
 )
 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 
 DEFAULT_PLOT_START = 20000
 DEFAULT_PLOT_SIZE = 300

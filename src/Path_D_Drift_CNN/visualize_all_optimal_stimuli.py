@@ -92,7 +92,7 @@ def load_real_input():
 
     dataset = UnifiedFoveatedDataset(IMAGES_PATH, SPIKES_PATH)
     _, peripheral, _, target = dataset[dataset_idx]
-    return peripheral[-1].numpy(), target.item()
+    return peripheral[-1, 0].numpy(), target.item()
 
 
 # ---------------------------------------------------------------------------
@@ -201,32 +201,51 @@ def generate_foveated_stimulus():
     )
     model.eval()
 
-    fovea = torch.randn(1, CNN_HISTORY, 20, 20,
-                         device=DEVICE, requires_grad=True)
-    periph = torch.randn(1, CNN_HISTORY, 50, 50,
-                          device=DEVICE, requires_grad=True)
+    fovea_img = torch.randn(1, CNN_HISTORY, 1, 20, 20,
+                             device=DEVICE, requires_grad=True)
+    periph_img = torch.randn(1, CNN_HISTORY, 1, 50, 50,
+                              device=DEVICE, requires_grad=True)
     foa = torch.zeros(1, 2, device=DEVICE)
 
-    optimizer = torch.optim.Adam([fovea, periph], lr=LR)
+    fy = torch.linspace(-1, 1, 20, device=DEVICE)
+    fx = torch.linspace(-1, 1, 20, device=DEVICE)
+    fy_map, fx_map = torch.meshgrid(fy, fx, indexing='ij')
+    fov_coords = torch.stack([fx_map, fy_map]).unsqueeze(0).unsqueeze(0)
+    fov_coords = fov_coords.expand(1, CNN_HISTORY, -1, -1, -1)
+
+    py = torch.linspace(-1, 1, 50, device=DEVICE)
+    px = torch.linspace(-1, 1, 50, device=DEVICE)
+    py_map, px_map = torch.meshgrid(py, px, indexing='ij')
+    per_coords = torch.stack([px_map, py_map]).unsqueeze(0).unsqueeze(0)
+    per_coords = per_coords.expand(1, CNN_HISTORY, -1, -1, -1)
+
+    optimizer = torch.optim.Adam([fovea_img, periph_img], lr=LR)
 
     print(f"      Running activation maximization ({NUM_STEPS} steps) ...")
     for step in range(1, NUM_STEPS + 1):
         optimizer.zero_grad()
+        fovea = torch.cat([fovea_img, fov_coords], dim=2)
+        periph = torch.cat([periph_img, per_coords], dim=2)
         loss = -model(fovea, periph, foa).squeeze()
         loss.backward()
         optimizer.step()
 
         if step % BLUR_EVERY == 0:
             with torch.no_grad():
-                fovea.data = blur_tensor(fovea.data, BLUR_KSIZE, BLUR_SIGMA)
-                periph.data = blur_tensor(periph.data, BLUR_KSIZE, BLUR_SIGMA)
-                fovea.data *= (1 - L2_DECAY)
-                periph.data *= (1 - L2_DECAY)
+                T = CNN_HISTORY
+                f_flat = fovea_img.data.reshape(T, 1, 20, 20)
+                fovea_img.data = blur_tensor(f_flat, BLUR_KSIZE, BLUR_SIGMA
+                                             ).reshape(1, T, 1, 20, 20)
+                p_flat = periph_img.data.reshape(T, 1, 50, 50)
+                periph_img.data = blur_tensor(p_flat, BLUR_KSIZE, BLUR_SIGMA
+                                              ).reshape(1, T, 1, 50, 50)
+                fovea_img.data *= (1 - L2_DECAY)
+                periph_img.data *= (1 - L2_DECAY)
 
         if step % 100 == 0:
             print(f"        step {step:>4d}  |  pred = {-loss.item():.4f}")
 
-    return periph[0, -1].detach().cpu().numpy()
+    return periph_img[0, -1, 0].detach().cpu().numpy()
 
 
 # ---------------------------------------------------------------------------

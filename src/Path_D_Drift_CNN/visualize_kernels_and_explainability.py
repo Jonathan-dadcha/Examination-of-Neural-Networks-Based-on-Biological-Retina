@@ -66,11 +66,11 @@ def plot_kernels(model, out_dir=None):
     """
     dest = out_dir if out_dir else OUT_DIR
 
-    periph_w = model.peripheral_stream[0].weight.detach().cpu()  # (8, 40, 5, 5)
-    fovea_w = model.fovea_stream[0].weight.detach().cpu()        # (16, 40, 9, 9)
+    periph_w = model.peripheral_stream[0].weight.detach().cpu()  # (8, 3, 5, 5)
+    fovea_w = model.fovea_stream[0].weight.detach().cpu()        # (16, 3, 9, 9)
 
-    periph_k = periph_w[:, -1]  # (8, 5, 5)
-    fovea_k = fovea_w[:, -1]    # (16, 9, 9)
+    periph_k = periph_w[:, 0]  # (8, 5, 5) — image channel
+    fovea_k = fovea_w[:, 0]    # (16, 9, 9) — image channel
 
     n_p, n_f = periph_k.shape[0], fovea_k.shape[0]
     ncols = 8
@@ -181,8 +181,8 @@ def plot_gradcam(model, sample_idx=None, out_dir=None):
     cam_up = (cam_up - lo) / (hi - lo + 1e-8)
 
     # ── Extract frames for visualisation ──────────────────────────────
-    periph_frame = peripheral_in[0, -1].detach().cpu().numpy()   # (50, 50)
-    fovea_frame = fovea_in[0, -1].detach().cpu().numpy()         # (20, 20)
+    periph_frame = peripheral_in[0, -1, 0].detach().cpu().numpy()   # (50, 50)
+    fovea_frame = fovea_in[0, -1, 0].detach().cpu().numpy()       # (20, 20)
 
     # ── Reconstruct Gaussian mask (matches dataset implementation) ────
     crop_size = 50

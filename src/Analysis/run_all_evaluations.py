@@ -54,7 +54,7 @@ PLOT_WINDOW_SIZE = 300
 # ── Grad-CAM sample ──────────────────────────────────────────────────────
 GRADCAM_SAMPLE_IDX = 20000
 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 BATCH_SIZE = 256
 
 SEPARATOR = "=" * 65

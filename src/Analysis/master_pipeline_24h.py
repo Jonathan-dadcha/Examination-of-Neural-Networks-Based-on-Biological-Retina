@@ -77,10 +77,7 @@ IMAGES_PATH = os.path.join(
 CHECKPOINTS_DIR = os.path.join(PROJECT_ROOT, "checkpoints")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
-DEVICE = torch.device(
-    "mps" if torch.backends.mps.is_available() else
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 
 TEST_START = 20000
 NUM_SAMPLES = 300
@@ -286,18 +283,31 @@ def train_ode(X_raw, Y):
 # ===================================================================
 # Section 4 — Train DriftCNN (Path C)
 # ===================================================================
-def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epochs):
-    """Adam optimizer, fixed epoch count, Pearson r tracking per epoch."""
+def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epochs,
+                          checkpoint_path=None):
+    """Adam + CosineAnnealing, with optional checkpoint resume every 10 epochs."""
     optimizer = optim.Adam(model.parameters(), lr=LR)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs)
     criterion = nn.PoissonNLLLoss(log_input=False)
 
     best_val_loss = float("inf")
     best_state = None
     is_foveated = "Foveated" in model_name
+    start_epoch = 1
+
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        ckpt = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        start_epoch = ckpt['epoch'] + 2  # ckpt['epoch'] is 0-based, loop is 1-based
+        best_val_loss = ckpt['best_val_loss']
+        best_state = ckpt['best_state']
+        print(f"  Resumed from epoch {start_epoch}, "
+              f"LR={optimizer.param_groups[0]['lr']:.6f}")
 
     t0 = time.time()
-    for epoch in range(1, max_epochs + 1):
-        # ---- train ----
+    for epoch in range(start_epoch, max_epochs + 1):
         model.train()
         train_loss, n_batches = 0.0, 0
         for batch in train_loader:
@@ -320,7 +330,6 @@ def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epoch
 
         avg_train = train_loss / max(n_batches, 1)
 
-        # ---- validate ----
         model.eval()
         val_loss, v_batches = 0.0, 0
         all_val_preds, all_val_targets = [], []
@@ -359,11 +368,24 @@ def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epoch
             best_val_loss = avg_val
             best_state = copy.deepcopy(model.state_dict())
 
+        scheduler.step()
+
         if epoch <= 5 or epoch % 10 == 0 or improved:
             flag = " *" if improved else ""
             print(f"  Epoch {epoch:4d}/{max_epochs} | "
                   f"Train {avg_train:.5f} | Val {avg_val:.5f} | "
-                  f"Val Pearson: {val_r:.4f}{flag}")
+                  f"Correlation: {val_r:.4f}{flag}")
+
+        if checkpoint_path and epoch % 10 == 0:
+            torch.save({
+                'epoch': epoch - 1,  # store 0-based for compat with standalone
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_val_loss': best_val_loss,
+                'best_state': best_state,
+            }, checkpoint_path)
+            print(f"  Checkpoint saved at epoch {epoch}")
 
     elapsed = time.time() - t0
     print(f"  Best val loss: {best_val_loss:.5f}")
@@ -432,8 +454,10 @@ def train_unified_foveated():
                             num_workers=0, pin_memory=False)
 
     model = UnifiedFoveatedCNN(history_size=CNN_HISTORY).to(DEVICE)
+    ckpt_resume = os.path.join(CHECKPOINTS_DIR, "unified_foveated_checkpoint.pth")
     best_state = _run_dl_training_loop(model, train_loader, val_loader,
-                                       "UnifiedFoveatedCNN", FOVEATED_EPOCHS)
+                                       "UnifiedFoveatedCNN", FOVEATED_EPOCHS,
+                                       checkpoint_path=ckpt_resume)
 
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
     ckpt = os.path.join(CHECKPOINTS_DIR, "unified_foveated_model_final.pth")
@@ -636,18 +660,21 @@ def main():
     _banner("MASTER PIPELINE — 24-Hour Training + Evaluation")
     t_total = time.time()
 
-    # ---- wipe stale checkpoints to prevent data-leakage ----
+    # ---- wipe stale final checkpoints (preserve in-progress *_checkpoint.pth) ----
     import glob as _glob
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
     stale = []
-    for ext in ("*.pth", "*.json", "*.joblib"):
+    for ext in ("*_final.pth", "*.json", "*.joblib"):
         stale.extend(_glob.glob(os.path.join(CHECKPOINTS_DIR, ext)))
     for fp in stale:
         os.remove(fp)
     if stale:
-        print(f"  Cleared {len(stale)} old checkpoint(s) to prevent data leakage.")
+        print(f"  Cleared {len(stale)} old final checkpoint(s).")
     else:
         print("  Checkpoints directory is clean — nothing to remove.")
+    preserved = _glob.glob(os.path.join(CHECKPOINTS_DIR, "*_checkpoint.pth"))
+    if preserved:
+        print(f"  Preserved {len(preserved)} in-progress checkpoint(s) for resume.")
 
     print(f"  Device:        {DEVICE}")
     print(f"  Test window:   Y[{TEST_START}:{TEST_START + NUM_SAMPLES}] "

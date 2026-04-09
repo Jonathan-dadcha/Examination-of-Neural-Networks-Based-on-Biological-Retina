@@ -8,10 +8,17 @@ import matplotlib.pyplot as plt
 
 from drift_dataset import DriftSimulationDataset
 
-IMAGES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/natural_scenes.h5"
-SPIKES_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/training_dataset_ns_full.h5"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
+_DATA_DIR = os.path.join(
+    os.environ.get("DATA_ROOT", os.path.join(_PROJECT_ROOT, "data", "10.12751_g-node.2j3d2i")),
+    "processed_data",
+)
 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+IMAGES_PATH = os.path.join(_DATA_DIR, "natural_scenes.h5")
+SPIKES_PATH = os.path.join(_DATA_DIR, "training_dataset_ns_full.h5")
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
 BATCH_SIZE = 256
 EPOCHS = 100
 

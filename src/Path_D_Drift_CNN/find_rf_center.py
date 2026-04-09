@@ -3,7 +3,14 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
-DATA_PATH = "/Users/jonathandadcha/Desktop/Retina-Comp-Project/data/10.12751_g-node.2j3d2i/processed_data/training_dataset_ns_full.h5"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
+_DATA_DIR = os.path.join(
+    os.environ.get("DATA_ROOT", os.path.join(_PROJECT_ROOT, "data", "10.12751_g-node.2j3d2i")),
+    "processed_data",
+)
+
+DATA_PATH = os.path.join(_DATA_DIR, "training_dataset_ns_full.h5")
 
 def find_center():
     print(f"🔍 Loading data from: {os.path.basename(DATA_PATH)}")

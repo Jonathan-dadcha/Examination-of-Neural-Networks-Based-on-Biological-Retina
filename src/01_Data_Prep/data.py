@@ -2,7 +2,7 @@ import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
-from config import BASE_PATH, SESSION
+from config import BASE_PATH
 
 
 def scan_sessions(base_path):
