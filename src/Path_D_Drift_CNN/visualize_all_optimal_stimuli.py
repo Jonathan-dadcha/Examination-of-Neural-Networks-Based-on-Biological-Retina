@@ -22,8 +22,10 @@ from matplotlib.colors import TwoSlopeNorm
 matplotlib.use("Agg")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PATH_C_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "Path_C_DeepLearning"))
+sys.path.insert(0, _PATH_C_DIR)
 sys.path.insert(0, SCRIPT_DIR)
-from train_drift_model import DriftCNN
+from train_cnn_model import DriftCNN
 from train_unified_foveated_model import (
     UnifiedFoveatedCNN,
     UnifiedFoveatedDataset,
@@ -91,7 +93,7 @@ def load_real_input():
     print(f"      Peak Y = {Y[peak_frame]:.4f} at frame {peak_frame}")
 
     dataset = UnifiedFoveatedDataset(IMAGES_PATH, SPIKES_PATH)
-    _, peripheral, _, target = dataset[dataset_idx]
+    _, peripheral, target = dataset[dataset_idx]
     return peripheral[-1, 0].numpy(), target.item()
 
 
@@ -205,28 +207,13 @@ def generate_foveated_stimulus():
                              device=DEVICE, requires_grad=True)
     periph_img = torch.randn(1, CNN_HISTORY, 1, 50, 50,
                               device=DEVICE, requires_grad=True)
-    foa = torch.zeros(1, 2, device=DEVICE)
-
-    fy = torch.linspace(-1, 1, 20, device=DEVICE)
-    fx = torch.linspace(-1, 1, 20, device=DEVICE)
-    fy_map, fx_map = torch.meshgrid(fy, fx, indexing='ij')
-    fov_coords = torch.stack([fx_map, fy_map]).unsqueeze(0).unsqueeze(0)
-    fov_coords = fov_coords.expand(1, CNN_HISTORY, -1, -1, -1)
-
-    py = torch.linspace(-1, 1, 50, device=DEVICE)
-    px = torch.linspace(-1, 1, 50, device=DEVICE)
-    py_map, px_map = torch.meshgrid(py, px, indexing='ij')
-    per_coords = torch.stack([px_map, py_map]).unsqueeze(0).unsqueeze(0)
-    per_coords = per_coords.expand(1, CNN_HISTORY, -1, -1, -1)
 
     optimizer = torch.optim.Adam([fovea_img, periph_img], lr=LR)
 
     print(f"      Running activation maximization ({NUM_STEPS} steps) ...")
     for step in range(1, NUM_STEPS + 1):
         optimizer.zero_grad()
-        fovea = torch.cat([fovea_img, fov_coords], dim=2)
-        periph = torch.cat([periph_img, per_coords], dim=2)
-        loss = -model(fovea, periph, foa).squeeze()
+        loss = -model(fovea_img, periph_img).squeeze()
         loss.backward()
         optimizer.step()
 

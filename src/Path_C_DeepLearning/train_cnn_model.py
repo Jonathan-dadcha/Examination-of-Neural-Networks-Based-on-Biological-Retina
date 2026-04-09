@@ -1,211 +1,296 @@
-import sys
+"""
+Path C — DriftCNN v3-Final Training
+====================================
+Dynamic architecture with no hardcoded dims, advanced regularisation
+(GaussianNoise, Dropout2d, activity reg, grad clipping), OneCycleLR,
+and early stopping on validation Pearson correlation.
+
+Uses DriftSimulationDataset (merged from Path D).
+"""
+
 import os
-import h5py
+import sys
+import copy
+
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Subset
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-try:
-    from config import BASE_PATH, SESSION
-except ImportError:
-    from config import BASE_PATH, SESSION
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, "..", ".."))
 
-DATA_FILE = os.path.join(BASE_PATH, 'processed_data', 'training_dataset_ns_full.h5')
-CHECKPOINT_PATH = os.path.join(BASE_PATH, 'processed_data', 'cnn_checkpoint.pth')
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src", "Path_D_Drift_CNN"))
+from drift_dataset import DriftSimulationDataset  # noqa: E402
 
-CENTER_X = 27
-CENTER_Y = 47
-CROP_SIZE = 50      
-HISTORY_SIZE = 40   
-BATCH_SIZE = 64
-LEARNING_RATE = 1e-4
-EPOCHS = 35           
-REGULARIZATION = 1e-5 
+_DATA_DIR = os.path.join(
+    os.environ.get("DATA_ROOT", os.path.join(_PROJECT_ROOT, "data", "10.12751_g-node.2j3d2i")),
+    "processed_data",
+)
+
+IMAGES_PATH = os.path.join(_DATA_DIR, "natural_scenes.h5")
+SPIKES_PATH = os.path.join(_DATA_DIR, "training_dataset_ns_full.h5")
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
+HISTORY_SIZE = 40
+BATCH_SIZE = 256
+EPOCHS = 120
+EARLY_STOP_PATIENCE = 10
+ACTIVITY_LAMBDA = 0.01
+GAUSSIAN_NOISE_STD = 0.05
 
-print(f"🚀 Training CNN on device: {DEVICE}")
 
-# --- 1. DATASET ---
-class DeepRetinaDataset(Dataset):
-    def __init__(self, h5_file, history_size, crop_size, cx, cy):
-        self.history_size = history_size
-        self.crop_half = crop_size // 2
-        
-        print("📂 Loading H5 Dataset into memory...")
-        with h5py.File(h5_file, 'r') as f:
-            X_full = f['X'][:]  
-            self.Y_full = f['Y'][:]
-            
-        y1 = max(0, cy - self.crop_half)
-        y2 = min(X_full.shape[1], cy + self.crop_half)
-        x1 = max(0, cx - self.crop_half)
-        x2 = min(X_full.shape[2], cx + self.crop_half)
-        
-        print(f"✂️ Cropping Input: y[{y1}:{y2}], x[{x1}:{x2}] around center ({cx},{cy})")
-        self.X_cropped = X_full[:, y1:y2, x1:x2]
-        
-        mean = np.mean(self.X_cropped)
-        std = np.std(self.X_cropped)
-        self.X_cropped = (self.X_cropped - mean) / (std + 1e-6)
-        
-        self.num_samples = self.X_cropped.shape[0] - history_size
-        self.spatial_shape = self.X_cropped.shape[1:]
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        x_clip = self.X_cropped[idx : idx + self.history_size] 
-        y_val = self.Y_full[idx + self.history_size - 1]
-        return torch.FloatTensor(x_clip), torch.FloatTensor([y_val])
-
-# --- 2. CNN ARCHITECTURE ---
-class DeepRetina(nn.Module):
-    def __init__(self, history_size, spatial_shape):
-        super(DeepRetina, self).__init__()
-        H, W = spatial_shape
-        
-        self.conv1 = nn.Conv2d(in_channels=history_size, out_channels=16, kernel_size=15)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.relu1 = nn.ReLU()
-        
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=8, kernel_size=9)
-        self.bn2 = nn.BatchNorm2d(8)
-        self.relu2 = nn.ReLU()
-        
-        h_out = (H - 15 + 1) - 9 + 1
-        w_out = (W - 15 + 1) - 9 + 1
-        self.flat_dim = 8 * h_out * w_out
-        
-        self.dense = nn.Linear(self.flat_dim, 1)
-        self.softplus = nn.Softplus() 
+# ---------------------------------------------------------------------------
+# Shared utility layer
+# ---------------------------------------------------------------------------
+class GaussianNoise(nn.Module):
+    """Adds Gaussian noise during training only."""
+    def __init__(self, std=0.05):
+        super().__init__()
+        self.std = std
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu2(x)
+        if self.training and self.std > 0:
+            return x + torch.randn_like(x) * self.std
+        return x
+
+
+# ---------------------------------------------------------------------------
+# DriftCNN v3-Final — Dynamic dims, GaussianNoise, Dropout2d, Kaiming
+# ---------------------------------------------------------------------------
+class DriftCNN(nn.Module):
+    def __init__(self, history_size=40, crop_size=50,
+                 dropout_conv=0.2, dropout_fc=0.5, noise_std=0.05):
+        super().__init__()
+
+        self.noise = GaussianNoise(std=noise_std)
+
+        self.features = nn.Sequential(
+            nn.Conv2d(history_size, 16, kernel_size=15),
+            nn.BatchNorm2d(16), nn.ReLU(), nn.Dropout2d(dropout_conv),
+            nn.Conv2d(16, 8, kernel_size=9),
+            nn.BatchNorm2d(8), nn.ReLU(), nn.Dropout2d(dropout_conv),
+        )
+
+        with torch.no_grad():
+            dummy = torch.zeros(1, history_size, crop_size, crop_size)
+            self.flat_dim = self.features(dummy).numel()
+
+        self.regressor = nn.Sequential(
+            nn.Dropout(dropout_fc),
+            nn.Linear(self.flat_dim, 1),
+            nn.Softplus(),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        self.regressor[-2].bias.data.fill_(0.01)
+
+    def print_debug_summary(self):
+        total = sum(p.numel() for p in self.parameters())
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"\n{'='*60}")
+        print("  DriftCNN v3-Final — Debug Summary")
+        print(f"{'='*60}")
+        print(f"  Total params:     {total:>10,}")
+        print(f"  Trainable params: {trainable:>10,}")
+        print(f"  Flat dim:         {self.flat_dim}")
+        print(f"{'-'*60}")
+        for name, p in self.named_parameters():
+            print(f"  {name:45s} {str(list(p.shape)):20s} {p.numel():>8,}")
+        print(f"{'='*60}\n")
+
+    def forward(self, x):
+        x = self.noise(x)
+        x = self.features(x)
         x = x.view(x.size(0), -1)
-        x = self.dense(x)
-        firing_rate = self.softplus(x)
-        return firing_rate
+        return self.regressor(x)
 
-# --- 3. TRAINING LOOP WITH CHECKPOINTS ---
-def train_cnn():
-    if not os.path.exists(DATA_FILE):
-        print("❌ Dataset not found.")
-        return
 
-    dataset = DeepRetinaDataset(DATA_FILE, HISTORY_SIZE, CROP_SIZE, CENTER_X, CENTER_Y)
-    
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
-    
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    
-    model = DeepRetina(HISTORY_SIZE, dataset.spatial_shape).to(DEVICE)
-    print(f"🧠 Model Architecture Created.")
-    
+# ---------------------------------------------------------------------------
+# Evaluation helper
+# ---------------------------------------------------------------------------
+def evaluate_model(model, loader, device):
+    model.eval()
+    all_preds, all_targets = [], []
+    with torch.no_grad():
+        for inputs, targets in loader:
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            all_preds.extend(outputs.cpu().numpy().flatten())
+            all_targets.extend(targets.numpy().flatten())
+    if np.std(all_preds) < 1e-9:
+        return 0.0
+    r = np.corrcoef(all_preds, all_targets)[0, 1]
+    return float(r) if not np.isnan(r) else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Training loop — v3-Final
+# ---------------------------------------------------------------------------
+def main():
+    print(f"Initializing DriftCNN v3-Final on {DEVICE}")
+    print(f"   HISTORY={HISTORY_SIZE}  BATCH={BATCH_SIZE}  EPOCHS={EPOCHS}  "
+          f"PATIENCE={EARLY_STOP_PATIENCE}")
+    print(f"   ACTIVITY_LAMBDA={ACTIVITY_LAMBDA}  NOISE_STD={GAUSSIAN_NOISE_STD}")
+
+    full_dataset = DriftSimulationDataset(IMAGES_PATH, SPIKES_PATH,
+                                          history_size=HISTORY_SIZE)
+
+    n = len(full_dataset)
+    train_end = int(0.8 * n)
+    train_ds = Subset(full_dataset, list(range(train_end)))
+    val_ds = Subset(full_dataset, list(range(train_end, n)))
+
+    use_cuda = DEVICE.type == "cuda"
+    train_loader = DataLoader(
+        train_ds, batch_size=BATCH_SIZE, shuffle=True,
+        num_workers=4 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda and True,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=BATCH_SIZE, shuffle=False,
+        num_workers=4 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda and True,
+    )
+
+    print(f"Chronological split: {len(train_ds)} train / {len(val_ds)} val "
+          f"(contiguous block, indices {train_end}..{n-1})")
+
+    model = DriftCNN(
+        history_size=HISTORY_SIZE,
+        noise_std=GAUSSIAN_NOISE_STD,
+    ).to(DEVICE)
+    model.print_debug_summary()
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=1e-3,
+        epochs=EPOCHS, steps_per_epoch=len(train_loader),
+        pct_start=0.3,
+    )
     criterion = nn.PoissonNLLLoss(log_input=False)
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=REGULARIZATION)
-    
-    start_epoch = 0
-    train_losses = []
-    test_correlations = []
 
-    if os.path.exists(CHECKPOINT_PATH):
-        print(f"🔄 Found checkpoint at {CHECKPOINT_PATH}. Loading...")
-        checkpoint = torch.load(CHECKPOINT_PATH)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        train_losses = checkpoint.get('train_losses', [])
-        test_correlations = checkpoint.get('test_correlations', [])
-        print(f"✅ Resuming training from epoch {start_epoch+1}")
-    else:
-        print("🆕 Starting training from scratch.")
-    
-    print("\n--- Starting Training (STABLE MODE + CHECKPOINTS) ---")
-    
-    for epoch in range(start_epoch, EPOCHS):
+    checkpoints_dir = os.path.join(_PROJECT_ROOT, "checkpoints")
+    os.makedirs(checkpoints_dir, exist_ok=True)
+
+    best_val_corr = -float("inf")
+    best_state = None
+    patience_counter = 0
+    train_loss_history = []
+    val_corr_history = []
+
+    print("Starting Training Loop...")
+
+    for epoch in range(EPOCHS):
         model.train()
-        running_loss = 0.0
-        
-        for i, (inputs, targets) in enumerate(train_loader):
+        epoch_loss = 0.0
+        epoch_activity_loss = 0.0
+
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
             inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
-            
+
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, targets)
+
+            poisson_loss = criterion(outputs, targets)
+            activity_loss = ACTIVITY_LAMBDA * torch.abs(
+                outputs.mean() - targets.mean()
+            )
+            loss = poisson_loss + activity_loss
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            running_loss += loss.item()
-            
-        avg_loss = running_loss / len(train_loader)
-        train_losses.append(avg_loss)
-        
-        model.eval()
-        all_preds, all_targets = [], []
-        with torch.no_grad():
-            for inputs, targets in test_loader:
-                inputs = inputs.to(DEVICE)
-                preds = model(inputs).cpu().numpy()
-                all_preds.extend(preds)
-                all_targets.extend(targets.numpy())
-        
-        preds_arr = np.array(all_preds).flatten()
-        targets_arr = np.array(all_targets).flatten()
-        
-        if np.std(preds_arr) < 1e-9:
-            pcc = 0.0
+            scheduler.step()
+
+            epoch_loss += loss.item()
+            epoch_activity_loss += activity_loss.item()
+
+            if batch_idx % 100 == 0:
+                print(f"   Batch {batch_idx}: Loss {loss.item():.4f} "
+                      f"(activity: {activity_loss.item():.5f})")
+
+        n_batches = len(train_loader)
+        avg_train_loss = epoch_loss / n_batches
+        avg_activity = epoch_activity_loss / n_batches
+
+        val_corr = evaluate_model(model, val_loader, DEVICE)
+
+        train_loss_history.append(avg_train_loss)
+        val_corr_history.append(val_corr)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        improved = ""
+        if val_corr > best_val_corr:
+            best_val_corr = val_corr
+            best_state = copy.deepcopy(model.state_dict())
+            patience_counter = 0
+            improved = " *best*"
         else:
-            pcc = np.corrcoef(preds_arr, targets_arr)[0, 1]
-            if np.isnan(pcc): pcc = 0.0
-            
-        test_correlations.append(pcc)
-        print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {avg_loss:.4f} | Test Corr: {pcc:.4f}")
+            patience_counter += 1
 
-        if (epoch + 1) % 5 == 0:
-            print(f"💾 Saving checkpoint to {CHECKPOINT_PATH}...")
+        print(f"Epoch {epoch+1}/{EPOCHS} | "
+              f"Loss: {avg_train_loss:.4f} | "
+              f"Activity: {avg_activity:.5f} | "
+              f"Val Corr: {val_corr:.4f}{improved} | "
+              f"LR: {current_lr:.6f} | "
+              f"Patience: {patience_counter}/{EARLY_STOP_PATIENCE}")
+
+        if (epoch + 1) % 10 == 0:
             torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_losses': train_losses,
-                'test_correlations': test_correlations
-            }, CHECKPOINT_PATH)
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "best_val_corr": best_val_corr,
+                "best_state": best_state,
+                "train_loss_history": train_loss_history,
+                "val_corr_history": val_corr_history,
+            }, os.path.join(checkpoints_dir, "drift_checkpoint.pth"))
+            print(f"  Checkpoint saved at epoch {epoch+1}")
 
-    torch.save({
-        'epoch': EPOCHS-1,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'train_losses': train_losses,
-        'test_correlations': test_correlations
-    }, CHECKPOINT_PATH)
+        if patience_counter >= EARLY_STOP_PATIENCE:
+            print(f"Early stopping at epoch {epoch+1} "
+                  f"(no improvement for {EARLY_STOP_PATIENCE} epochs)")
+            break
 
-    # --- PLOTTING ---
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Train Loss')
-    plt.title("Training Loss")
-    plt.grid(True)
-    plt.subplot(1, 2, 2)
-    plt.plot(test_correlations, color='orange', label='Test Correlation')
-    plt.title(f"Final Correlation: {test_correlations[-1] if test_correlations else 0:.4f}")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
-    
-    print(f"\n🏆 FINAL RESULT: Test Correlation = {test_correlations[-1] if test_correlations else 0:.4f}")
+    final_state = best_state if best_state is not None else model.state_dict()
+    final_path = os.path.join(checkpoints_dir, "drift_model_final.pth")
+    torch.save(final_state, final_path)
+    print(f"Best model saved to {final_path}  (val corr = {best_val_corr:.4f})")
+
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss", color="tab:blue")
+    ax1.plot(train_loss_history, color="tab:blue", label="Train Loss")
+    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    ax2 = ax1.twinx()
+    ax2.set_ylabel("Val Correlation (Pearson)", color="tab:orange")
+    ax2.plot(val_corr_history, color="tab:orange", label="Val Correlation")
+    ax2.tick_params(axis="y", labelcolor="tab:orange")
+    plt.title("DriftCNN v3-Final: Loss vs Correlation")
+    fig.tight_layout()
+    curve_path = os.path.join(checkpoints_dir, "drift_training_curve.png")
+    plt.savefig(curve_path, dpi=150)
+    print(f"Training curve saved to {curve_path}")
+
 
 if __name__ == "__main__":
-    train_cnn()
+    main()

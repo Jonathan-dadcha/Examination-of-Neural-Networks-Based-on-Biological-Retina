@@ -66,11 +66,11 @@ def plot_kernels(model, out_dir=None):
     """
     dest = out_dir if out_dir else OUT_DIR
 
-    periph_w = model.peripheral_stream[0].weight.detach().cpu()  # (8, 3, 5, 5)
-    fovea_w = model.fovea_stream[0].weight.detach().cpu()        # (16, 3, 9, 9)
+    periph_w = model.peripheral_stream[0].weight.detach().cpu()  # (8, 1, 5, 5)
+    fovea_w = model.fovea_stream[0].weight.detach().cpu()        # (16, 1, 9, 9)
 
-    periph_k = periph_w[:, 0]  # (8, 5, 5) — image channel
-    fovea_k = fovea_w[:, 0]    # (16, 9, 9) — image channel
+    periph_k = periph_w[:, 0]  # (8, 5, 5)
+    fovea_k = fovea_w[:, 0]    # (16, 9, 9)
 
     n_p, n_f = periph_k.shape[0], fovea_k.shape[0]
     ncols = 8
@@ -139,11 +139,10 @@ def plot_gradcam(model, sample_idx=None, out_dir=None):
     print(f"    Using validation sample idx = {idx}")
 
     dataset = UnifiedFoveatedDataset(IMAGES_PATH, SPIKES_PATH)
-    fovea, peripheral, foa_coords, target = dataset[idx]
+    fovea, peripheral, target = dataset[idx]
 
     fovea_in = fovea.unsqueeze(0).to(DEVICE)
     peripheral_in = peripheral.unsqueeze(0).to(DEVICE)
-    foa_in = foa_coords.unsqueeze(0).to(DEVICE)
 
     # ── Forward hook on ReLU after last Conv2d in peripheral_stream ───
     # Sequential: Conv2d[0] BN[1] ReLU[2] Conv2d[3] BN[4] ReLU[5] Pool[6]
@@ -155,7 +154,7 @@ def plot_gradcam(model, sample_idx=None, out_dir=None):
 
     handle = model.peripheral_stream[5].register_forward_hook(_fwd_hook)
 
-    output = model(fovea_in, peripheral_in, foa_in)
+    output = model(fovea_in, peripheral_in)
     pred = output.item()
 
     model.zero_grad()

@@ -17,11 +17,13 @@ import matplotlib.pyplot as plt
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+PATH_C_DIR = os.path.join(PROJECT_ROOT, "src", "Path_C_DeepLearning")
 PATH_D_DIR = os.path.join(PROJECT_ROOT, "src", "Path_D_Drift_CNN")
 
+sys.path.insert(0, PATH_C_DIR)
 sys.path.insert(0, PATH_D_DIR)
 
-from train_drift_model import DriftCNN
+from train_cnn_model import DriftCNN
 from train_unified_foveated_model import UnifiedFoveatedCNN, UnifiedFoveatedDataset
 from drift_dataset import DriftSimulationDataset
 
@@ -81,11 +83,10 @@ def evaluate_unified_foveated(dataset, checkpoint_path, device, start_idx, num_s
     preds, targets = [], []
     with torch.no_grad():
         for i in range(start_idx, start_idx + num_samples):
-            fovea, peripheral, foa_coords, y = dataset[i]
+            fovea, peripheral, y = dataset[i]
             out = model(
                 fovea.unsqueeze(0).to(device),
                 peripheral.unsqueeze(0).to(device),
-                foa_coords.unsqueeze(0).to(device),
             )
             preds.append(out.item())
             targets.append(y.item())

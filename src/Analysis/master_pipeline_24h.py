@@ -56,10 +56,12 @@ from scipy.stats import pearsonr
 # ---------------------------------------------------------------------------
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+PATH_C_DIR = os.path.join(PROJECT_ROOT, "src", "Path_C_DeepLearning")
 PATH_D_DIR = os.path.join(PROJECT_ROOT, "src", "Path_D_Drift_CNN")
+sys.path.insert(0, PATH_C_DIR)
 sys.path.insert(0, PATH_D_DIR)
 
-from train_drift_model import DriftCNN  # noqa: E402  # type: ignore[import-not-found]
+from train_cnn_model import DriftCNN  # noqa: E402  # type: ignore[import-not-found]
 from train_unified_foveated_model import UnifiedFoveatedCNN, UnifiedFoveatedDataset  # noqa: E402  # type: ignore[import-not-found]
 from drift_dataset import DriftSimulationDataset  # noqa: E402  # type: ignore[import-not-found]
 
@@ -84,7 +86,7 @@ NUM_SAMPLES = 300
 
 CNN_HISTORY = 40
 BATCH_SIZE = 256
-DRIFTCNN_EPOCHS = 100
+DRIFTCNN_EPOCHS = 120
 FOVEATED_EPOCHS = 120
 LR = 1e-3
 
@@ -312,10 +314,10 @@ def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epoch
         train_loss, n_batches = 0.0, 0
         for batch in train_loader:
             if is_foveated:
-                fovea, periph, foa, targets = batch
+                fovea, periph, targets = batch
                 fovea, periph = fovea.to(DEVICE), periph.to(DEVICE)
-                foa, targets = foa.to(DEVICE), targets.to(DEVICE)
-                outputs = model(fovea, periph, foa)
+                targets = targets.to(DEVICE)
+                outputs = model(fovea, periph)
             else:
                 inputs, targets = batch
                 inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
@@ -336,10 +338,10 @@ def _run_dl_training_loop(model, train_loader, val_loader, model_name, max_epoch
         with torch.no_grad():
             for batch in val_loader:
                 if is_foveated:
-                    fovea, periph, foa, targets = batch
+                    fovea, periph, targets = batch
                     fovea, periph = fovea.to(DEVICE), periph.to(DEVICE)
-                    foa, targets = foa.to(DEVICE), targets.to(DEVICE)
-                    outputs = model(fovea, periph, foa)
+                    targets = targets.to(DEVICE)
+                    outputs = model(fovea, periph)
                 else:
                     inputs, targets = batch
                     inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
@@ -549,11 +551,10 @@ def evaluate_all(X_raw, Y, glm_pipeline, glm_crop, ode_params, ode_stim,
     with torch.no_grad():
         for t in range(TEST_START, TEST_START + NUM_SAMPLES):
             ds_idx = t - CNN_HISTORY + 1
-            fovea, peripheral, foa_coords, _ = foveated_dataset[ds_idx]
+            fovea, peripheral, _ = foveated_dataset[ds_idx]
             out = model_d(
                 fovea.unsqueeze(0).to(DEVICE),
                 peripheral.unsqueeze(0).to(DEVICE),
-                foa_coords.unsqueeze(0).to(DEVICE),
             )
             preds_fov.append(out.item())
 

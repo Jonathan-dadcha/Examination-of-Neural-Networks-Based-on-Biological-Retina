@@ -23,8 +23,10 @@ from torch.utils.data import DataLoader, Subset
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+PATH_C_DIR = os.path.join(PROJECT_ROOT, "src", "Path_C_DeepLearning")
 PATH_D_DIR = os.path.join(PROJECT_ROOT, "src", "Path_D_Drift_CNN")
 
+sys.path.insert(0, PATH_C_DIR)
 sys.path.insert(0, PATH_D_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
@@ -84,7 +86,7 @@ def compute_global_validation_scores() -> tuple:
 
     Returns (global_r_standard, global_r_foveated).
     """
-    from train_drift_model import DriftCNN
+    from train_cnn_model import DriftCNN
     from train_unified_foveated_model import UnifiedFoveatedCNN, UnifiedFoveatedDataset
     from drift_dataset import DriftSimulationDataset
 
@@ -148,11 +150,10 @@ def compute_global_validation_scores() -> tuple:
     preds_f, tgts_f = [], []
     t0 = time.time()
     with torch.no_grad():
-        for bi, (fovea, peripheral, foa_coords, y) in enumerate(fov_loader):
+        for bi, (fovea, peripheral, y) in enumerate(fov_loader):
             out = model_fov(
                 fovea.to(DEVICE),
                 peripheral.to(DEVICE),
-                foa_coords.to(DEVICE),
             )
             preds_f.extend(out.cpu().numpy().flatten())
             tgts_f.extend(y.numpy().flatten())
@@ -192,7 +193,7 @@ def ensure_checkpoints() -> None:
         saved_cwd = os.getcwd()
         os.chdir(PROJECT_ROOT)
         try:
-            from train_drift_model import main as train_drift
+            from train_cnn_model import main as train_drift
             train_drift()
         finally:
             os.chdir(saved_cwd)
