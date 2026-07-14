@@ -22,7 +22,7 @@ We implemented and compared four distinct modeling paradigms — from classical 
 | **A** | Linear Statistical Model | GLM/CBEM with Poisson regression | Complete |
 | **B** | Biophysical ODE Model | Retinomorphic circuit simulation | Complete |
 | **C** | Deep Learning | Spatiotemporal CNN architecture | Complete |
-| **D** | Unified Foveated CNN | Saliency-guided Attention + Dilated Convolutions + NM-FCL | Complete |
+| **D** | Foveated Drift CNN | Two-stream fovea/periphery + micro-drift | Complete |
 
 ---
 
@@ -85,38 +85,38 @@ The project leverages the **Karamanlis & Gollisch 2021** dataset featuring Mouse
 
 ---
 
-### Path D — Unified Foveated Architecture (NM-FCL)
+### Path D — Foveated Drift CNN
 
 **Location:** `src/Path_D_Drift_CNN/`
 
 | Attribute | Details |
 |:----------|:--------|
-| **Type** | Unified Foveated CNN with Network Modulator (PyTorch) |
-| **Concept** | Inspired by Tiezzi et al. (2022) and primate foveal/peripheral asymmetry |
-| **Architecture** | **Fovea stream** — high-res center crop (20×20, full resolution); **Peripheral stream (PW-FCL)** — full 50×50 field processed with dilated convolutions (dilation rates 2, 4) to capture large receptive fields without spatial downsampling. Streams are fused via a **Network Modulator (NM-FCL)** that dynamically gates features based on the current Focus of Attention (FOA) coordinates. |
-| **Gravitational Attention (Saliency-Guided)** | The fixation point is driven by a saliency-guided gravitational model: at each frame the FOA drifts toward the highest local variance in the input, replacing the earlier random-walk drift with a biologically-plausible attentional mechanism. |
-| **Result** | **R ~ 0.33** with **91.1% fewer MACs** than the baseline CNN |
+| **Type** | Two-stream Foveated Drift CNN (PyTorch) |
+| **Concept** | Space-variant sampling with biological micro-drift |
+| **Architecture** | **Fovea stream** — 20×20 full-resolution center; **Peripheral stream** — 50×50 crop downsampled to 25×25 by 2×2 average pooling. Both streams encode the 40-frame history as input channels and feed a Softplus regression head. |
+| **Micro-drift** | Per-frame cumulative Gaussian random walk (std 0.15 px, clipped to ±2 px) applied during sample construction. |
+| **Result** | **R = 0.33** with **92.0% fewer MACs** than the baseline CNN (15.50 M vs 194.87 M) |
 
-> The Unified Foveated Architecture **outperformed** the full-resolution CNN (R = 0.33 vs. 0.29) while using less than **10%** of the compute (17.3M vs. 195M MACs). By combining saliency-guided attention, dilated peripheral convolutions, and dynamic feature gating, this biologically-inspired model acts as an evolutionary information bottleneck — achieving superior accuracy through efficient, selective processing rather than brute-force computation.
+> The Foveated Drift CNN outperformed the full-resolution CNN (R = 0.33 vs 0.29) while cutting per-frame compute by 92%. Efficiency comes from restricting full-resolution convolution to the fovea and processing the periphery at lower resolution.
 
 ---
 
 ## Key Results
 
-Our comparative analysis revealed a decisive advantage for Deep Learning in natural scene decoding, while the Unified Foveated architecture demonstrated that biological design principles can dramatically reduce compute and actually *surpass* the full-resolution baseline.
+Our comparative analysis showed a clear advantage for deep learning on natural scenes. The foveated Path D model also cut compute relative to the uniform CNN baseline while raising correlation.
 
 | Model | Approach | Correlation (R) | Compute (MACs) | Status |
 |:------|:---------|:---------------:|:--------------:|:------:|
 | Path A | GLM | -0.02 | — | Failed |
 | Path B | ODE | 0.00 | — | Failed |
-| **Path C** | **Standard CNN** | **0.291** | **Baseline (1.0x)** | **Success** |
-| **Path D** | **Unified Foveated CNN** | **~0.33** | **0.089x (91.1% reduction)** | **SOTA** |
+| **Path C** | **Standard CNN** | **0.291** | **194.87 M (1.0x)** | **Success** |
+| **Path D** | **Foveated Drift CNN** | **0.33** | **15.50 M (0.08x, 92% reduction)** | **Success** |
 
 **Key Takeaways:**
 
-1. Classical statistical and biophysical models (Paths A & B) cannot capture the nonlinear spatiotemporal structure of natural scenes.
-2. The standard CNN (Path C) achieves the highest raw correlation, confirming that learned nonlinear features are essential.
-3. The Unified Foveated CNN (Path D) **surpassed** the full-resolution baseline (R = 0.33 vs. 0.29) while requiring only ~9% of the compute, proving that biologically-inspired selective attention and efficient peripheral encoding can outperform brute-force approaches.
+1. Classical statistical and biophysical models (Paths A and B) cannot capture the nonlinear spatiotemporal structure of natural scenes.
+2. The standard CNN (Path C) provides a working deep learning baseline (R = 0.291).
+3. The Foveated Drift CNN (Path D) reached R = 0.33 while using about 8% of Path C's MACs, validating space-variant sampling as an efficiency mechanism.
 
 ---
 
@@ -156,45 +156,13 @@ Computes the spike-triggered average to locate the RGC receptive field center us
 # Path C — Standard CNN (baseline)
 python src/Path_C_DeepLearning/train_cnn_model.py
 
-# Path D — Baseline Drift CNN (micro-drift, no foveation)
-python src/Path_D_Drift_CNN/train_drift_model.py
-
-# Path D — Foveated Drift CNN (micro-drift + foveated two-stream)
+# Path D — Foveated Drift CNN (micro-drift + two-stream foveation)
 python src/Path_D_Drift_CNN/train_foveated_model.py
-
-# Path D — Unified Foveated CNN (saliency-guided attention + NM-FCL)
-python src/Path_D_Drift_CNN/train_unified_foveated_model.py
-```
-
-### 5. Run Final Comparison
-
-```bash
-python src/Analysis/run_all_models.py
 ```
 
 ### Reference Model Libraries
 
-The `Models/` directory contains cloned reference implementations used during early exploration:
-
-```bash
-# CBEM (Conductance-based Encoding Model)
-cd Models/CBEM-master
-../../Models/.conda/bin/python -m jupyter notebook exampleCBEMfitting.ipynb
-
-# Deep-Retina (McIntosh et al.)
-cd Models/deep-retina-master/scripts
-../../.conda/bin/python fit_models.py --expt 15-10-07 --stim whitenoise --model BN_CNN
-
-# Wu Nature Communications 2024
-cd Models/wu-nature-comms-2024-master
-../.conda/bin/jupyter notebook SUBMISSION_jitter_reconstruction_demo.ipynb
-```
-
-### Verify Installation
-
-```bash
-Models/.conda/bin/python --version   # Should be 3.11+
-```
+The `Models/` directory contains cloned reference implementations used during early exploration (CBEM, deep-retina, Wu Nature Communications 2024).
 
 ---
 
@@ -209,29 +177,22 @@ Retina-Comp-Project/
 │
 ├── checkpoints/                       # Saved model weights & training curves
 │
-├── Models/                            # Reference implementations & conda env
-│   ├── .conda/                        # Local Python 3.11 environment
+├── Models/                            # Reference implementations
 │   ├── CBEM-master/                   # Conductance-based encoding model
 │   ├── deep-retina-master/            # McIntosh et al. CNN
-│   ├── foveated_cnn/                  # Early foveated CNN prototypes
 │   └── wu-nature-comms-2024-master/   # Wu et al. jitter reconstruction
 │
 ├── src/                               # Source code
 │   ├── 01_Data_Prep/                  # Data reconstruction pipeline
 │   ├── Path_A_CBEM/                   # GLM model scripts
 │   ├── Path_B_Retinomorphic/          # ODE simulation scripts
-│   ├── Path_C_DeepLearning/           # Standard CNN model scripts
-│   ├── Path_D_Drift_CNN/              # Unified Foveated CNN (final model)
-│   │   ├── find_rf_center.py          # STA-based RF localization
-│   │   ├── drift_dataset.py           # Micro-drift dataset (baseline)
-│   │   ├── foveated_drift_dataset.py  # Two-stream foveated dataset
-│   │   ├── train_drift_model.py       # Baseline drift CNN training
-│   │   ├── train_foveated_model.py    # Foveated drift CNN training
-│   │   ├── train_unified_foveated_model.py  # Unified Foveated CNN (NM-FCL)
-│   │   └── visualize_drift.py         # Drift trajectory visualization
-│   ├── Analysis/                      # Final comparison & plotting
+│   ├── Path_C_DeepLearning/           # Standard CNN
+│   ├── Path_D_Drift_CNN/              # Foveated Drift CNN (final model)
+│   │   ├── foveated_drift_dataset.py  # Two-stream micro-drift dataset
+│   │   └── train_foveated_model.py    # Foveated Drift CNN training
 │   └── config.py                      # Global configuration
 │
+├── results/                           # Prediction and input/output figures
 └── Written-materials/                 # Reports & papers
 ```
 
